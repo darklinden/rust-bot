@@ -9,19 +9,25 @@ use serde_json::Value;
 use std::env;
 use tokio::time::{sleep, Duration};
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// ─── Constants ───────────────────────────────────────────────────────────────
 
+const API_REQUEST_RETRIES: u32 = 5;
+const FETCH_INTERVAL_MS: i64 = 30 * 60 * 1000;
+const CACHE_EXPIRE: u64 = 40 * 60;
+const OUNCE_TO_GRAM: f64 = 31.1035;
+
+// ─── Types ───────────────────────────────────────────────────────────────────
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IAPIRequestResult {
     pub metal: String,
     pub currency: String,
     pub update: String,
-    pub prev_close_price: f64,
-    pub open_price: f64,
-    pub low_price: f64,
-    pub high_price: f64,
-    pub price: f64,
-    pub change_percent: f64,
+    pub prev_close_price: String,
+    pub open_price: String,
+    pub low_price: String,
+    pub high_price: String,
+    pub price: String,
+    pub change_percent: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,13 +39,20 @@ pub struct ICachedPriceData {
     pub silver_usd: Option<IAPIRequestResult>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CachedRateData {
+    time: i64,
+    update_time: String,
+    usd_cny: Option<f64>,
+}
+
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 pub fn stamp_to_string(timestamp: i64) -> String {
-    let dt = Utc.timestamp_opt(timestamp, 0).single();
+    let seconds = timestamp / 1000;
+    let dt = Utc.timestamp_opt(seconds, 0).single();
     match dt {
         Some(dt) => {
-            // Shift to UTC+8
             let beijing = dt + chrono::Duration::hours(8);
             beijing.format("%Y-%m-%d %H:%M").to_string()
         }
@@ -48,8 +61,28 @@ pub fn stamp_to_string(timestamp: i64) -> String {
 }
 
 fn window_ts() -> i64 {
-    let now = Utc::now().timestamp();
-    (now / 1800) * 1800
+    let now_ms = Utc::now().timestamp_millis();
+    (now_ms / FETCH_INTERVAL_MS) * FETCH_INTERVAL_MS
+}
+
+pub fn parse_f64(v: &serde_json::Value) -> f64 {
+    match v {
+        Value::Number(n) => n.as_f64().unwrap_or(0.0),
+        Value::String(s) => s.parse::<f64>().unwrap_or(0.0),
+        _ => 0.0,
+    }
+}
+
+fn value_to_string(v: &serde_json::Value) -> Option<String> {
+    match v {
+        Value::Number(n) => Some(n.to_string()),
+        Value::String(s) if !s.is_empty() => Some(s.clone()),
+        _ => None,
+    }
+}
+
+pub fn format_price(v: f64, decimals: usize) -> String {
+    format!("{:.prec$}", v, prec = decimals)
 }
 
 // ─── Jisu API ─────────────────────────────────────────────────────────────────
@@ -66,14 +99,6 @@ struct JisuItem {
     changepercent: serde_json::Value,
     lastclosingprice: serde_json::Value,
     updatetime: String,
-}
-
-pub fn parse_f64(v: &serde_json::Value) -> f64 {
-    match v {
-        Value::Number(n) => n.as_f64().unwrap_or(0.0),
-        Value::String(s) => s.parse::<f64>().unwrap_or(0.0),
-        _ => 0.0,
-    }
 }
 
 async fn fetch_jisu_with_retry(
@@ -101,7 +126,7 @@ async fn fetch_jisu_with_retry(
             }
         }
         if attempt < max_retries {
-            sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
+            sleep(Duration::from_millis(1000)).await;
         }
     }
     None
@@ -112,55 +137,112 @@ async fn fetch_jisu_prices(
     token: &str,
 ) -> (Option<IAPIRequestResult>, Option<IAPIRequestResult>) {
     let gold_url = format!("https://api.jisuapi.com/gold/shgold?appkey={}", token);
-    let silver_url = format!("https://api.jisuapi.com/gold/shsilver?appkey={}", token);
+    let silver_url = format!("https://api.jisuapi.com/silver/shgold?appkey={}", token);
 
     let (gold_resp, silver_resp) = tokio::join!(
-        fetch_jisu_with_retry(client, &gold_url, 5),
-        fetch_jisu_with_retry(client, &silver_url, 5)
+        fetch_jisu_with_retry(client, &gold_url, API_REQUEST_RETRIES),
+        fetch_jisu_with_retry(client, &silver_url, API_REQUEST_RETRIES)
     );
 
-    let gold_result = parse_jisu_response(gold_resp, "AU99.99", "XAU", "CNY");
-    let silver_result = parse_jisu_response(silver_resp, "Ag99.99", "XAG", "CNY");
+    let gold_result = parse_jisu_gold_response(gold_resp);
+    let silver_result = parse_jisu_silver_response(silver_resp);
 
     (gold_result, silver_result)
 }
 
-fn parse_jisu_response(
-    resp: Option<Value>,
-    metal_type_filter: &str,
-    metal: &str,
-    currency: &str,
-) -> Option<IAPIRequestResult> {
+fn parse_jisu_gold_response(resp: Option<Value>) -> Option<IAPIRequestResult> {
     let json = resp?;
-    let status = json.get("status").and_then(|v| v.as_i64()).unwrap_or(-1);
+    let status = json.get("status").and_then(|v| {
+        v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+    }).unwrap_or(-1);
     if status != 0 {
-        log::warn!("[Jisu] Non-zero status: {}", status);
+        log::warn!("[Jisu] Non-zero status for gold: {}", status);
         return None;
     }
     let result = json.get("result")?.as_array()?;
     let item_val = result.iter().find(|item| {
         item.get("type")
             .and_then(|v| v.as_str())
-            .map(|t| t == metal_type_filter)
+            .map(|t| t == "AU99.99")
             .unwrap_or(false)
     })?;
 
     let item: JisuItem = serde_json::from_value(item_val.clone()).ok()?;
 
-    let update_ts = chrono::NaiveDateTime::parse_from_str(&item.updatetime, "%Y-%m-%d %H:%M:%S")
-        .map(|dt| dt.and_utc().timestamp() - 8 * 3600)
-        .unwrap_or_else(|_| Utc::now().timestamp());
+    Some(IAPIRequestResult {
+        metal: "XAU".to_string(),
+        currency: "CNY".to_string(),
+        update: item.updatetime.clone(),
+        prev_close_price: value_to_string(&item.lastclosingprice).unwrap_or_else(|| "N/A".to_string()),
+        open_price: value_to_string(&item.openingprice).unwrap_or_else(|| "N/A".to_string()),
+        low_price: value_to_string(&item.minprice).unwrap_or_else(|| "N/A".to_string()),
+        high_price: value_to_string(&item.maxprice).unwrap_or_else(|| "N/A".to_string()),
+        price: value_to_string(&item.price).unwrap_or_else(|| "N/A".to_string()),
+        change_percent: value_to_string(&item.changepercent).unwrap_or_else(|| "N/A".to_string()),
+    })
+}
+
+fn parse_jisu_silver_response(resp: Option<Value>) -> Option<IAPIRequestResult> {
+    let json = resp?;
+    let status = json.get("status").and_then(|v| {
+        v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+    }).unwrap_or(-1);
+    if status != 0 {
+        log::warn!("[Jisu] Non-zero status for silver: {}", status);
+        return None;
+    }
+    let result = json.get("result")?.as_array()?;
+    let item_val = result.iter().find(|item| {
+        item.get("type")
+            .and_then(|v| v.as_str())
+            .map(|t| t == "Ag99.99")
+            .unwrap_or(false)
+    })?;
+
+    let item: JisuItem = serde_json::from_value(item_val.clone()).ok()?;
+
+    // Silver prices from Jisu are in 元/千克, divide by 1000 for 元/克
+    let divide_1000 = |v: &serde_json::Value| -> String {
+        let raw = parse_f64(v);
+        if raw == 0.0 && !matches!(v, Value::Number(_) | Value::String(_)) {
+            return "N/A".to_string();
+        }
+        let has_value = match v {
+            Value::String(s) => !s.is_empty(),
+            Value::Number(_) => true,
+            _ => false,
+        };
+        if has_value {
+            format!("{:.2}", raw / 1000.0)
+        } else {
+            "N/A".to_string()
+        }
+    };
+
+    let change_pct = {
+        let has_value = match &item.changepercent {
+            Value::String(s) => !s.is_empty(),
+            Value::Number(_) => true,
+            _ => false,
+        };
+        if has_value {
+            let val = parse_f64(&item.changepercent);
+            format!("{:.2}%", val)
+        } else {
+            "N/A".to_string()
+        }
+    };
 
     Some(IAPIRequestResult {
-        metal: metal.to_string(),
-        currency: currency.to_string(),
-        update: stamp_to_string(update_ts),
-        prev_close_price: parse_f64(&item.lastclosingprice),
-        open_price: parse_f64(&item.openingprice),
-        low_price: parse_f64(&item.minprice),
-        high_price: parse_f64(&item.maxprice),
-        price: parse_f64(&item.price),
-        change_percent: parse_f64(&item.changepercent),
+        metal: "XAG".to_string(),
+        currency: "CNY".to_string(),
+        update: item.updatetime.clone(),
+        prev_close_price: divide_1000(&item.lastclosingprice),
+        open_price: divide_1000(&item.openingprice),
+        low_price: divide_1000(&item.minprice),
+        high_price: divide_1000(&item.maxprice),
+        price: divide_1000(&item.price),
+        change_percent: change_pct,
     })
 }
 
@@ -196,7 +278,7 @@ async fn fetch_goldapi_with_retry(
             }
         }
         if attempt < max_retries {
-            sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
+            sleep(Duration::from_millis(1000)).await;
         }
     }
     None
@@ -206,75 +288,94 @@ async fn fetch_goldapi_prices(
     client: &reqwest::Client,
     token: &str,
 ) -> (Option<IAPIRequestResult>, Option<IAPIRequestResult>) {
-    let gold_url = "https://api.gold-api.com/price/XAU";
-    let silver_url = "https://api.gold-api.com/price/XAG";
+    let now = Utc::now().timestamp();
+    let start = now - 24 * 3600;
 
-    let (gold_resp, silver_resp) = tokio::join!(
-        fetch_goldapi_with_retry(client, gold_url, token, 5),
-        fetch_goldapi_with_retry(client, silver_url, token, 5)
+    let gold_price_url = "https://api.gold-api.com/price/XAU".to_string();
+    let silver_price_url = "https://api.gold-api.com/price/XAG".to_string();
+    let gold_history_url = format!(
+        "https://api.gold-api.com/ohlc/XAU?startTimestamp={}&endTimestamp={}",
+        start, now
+    );
+    let silver_history_url = format!(
+        "https://api.gold-api.com/ohlc/XAG?startTimestamp={}&endTimestamp={}",
+        start, now
     );
 
-    let gold_result = parse_goldapi_response(gold_resp, "XAU", "USD");
-    let silver_result = parse_goldapi_response(silver_resp, "XAG", "USD");
+    let (gold_price_resp, gold_history_resp, silver_price_resp, silver_history_resp) = tokio::join!(
+        fetch_goldapi_with_retry(client, &gold_price_url, token, API_REQUEST_RETRIES),
+        fetch_goldapi_with_retry(client, &gold_history_url, token, API_REQUEST_RETRIES),
+        fetch_goldapi_with_retry(client, &silver_price_url, token, API_REQUEST_RETRIES),
+        fetch_goldapi_with_retry(client, &silver_history_url, token, API_REQUEST_RETRIES)
+    );
+
+    let gold_result = build_goldapi_result(gold_price_resp, gold_history_resp, "XAU");
+    let silver_result = build_goldapi_result(silver_price_resp, silver_history_resp, "XAG");
 
     (gold_result, silver_result)
 }
 
-fn parse_goldapi_response(
-    resp: Option<Value>,
+fn build_goldapi_result(
+    price_resp: Option<Value>,
+    history_resp: Option<Value>,
     metal: &str,
-    currency: &str,
 ) -> Option<IAPIRequestResult> {
-    let json = resp?;
+    let price_json = price_resp;
+    let history_json = history_resp;
 
-    let price = json
-        .get("price")
-        .and_then(|v| v.as_f64())
-        .or_else(|| {
-            json.get("price")
-                .and_then(|v| v.as_str())
-                .and_then(|s| s.parse::<f64>().ok())
-        })
-        .unwrap_or(0.0);
+    // Current price from /price endpoint
+    let price_str = price_json.as_ref().and_then(|json| {
+        json.get("price")
+            .and_then(|v| v.as_f64())
+            .map(|p| p.to_string())
+    });
 
-    let prev_close = json
-        .get("prev_close_price")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let open_price = json
-        .get("open_price")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let low_price = json
-        .get("low_price")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
-    let high_price = json
-        .get("high_price")
-        .and_then(|v| v.as_f64())
-        .unwrap_or(0.0);
+    // updatedAt from /price endpoint
+    let update = price_json.as_ref().and_then(|json| {
+        json.get("updatedAt")
+            .and_then(|v| v.as_str())
+            .and_then(|s| {
+                chrono::DateTime::parse_from_rfc3339(s)
+                    .ok()
+                    .map(|dt| stamp_to_string(dt.timestamp_millis()))
+            })
+    });
 
-    let change_percent = if prev_close > 0.0 {
-        (price - prev_close) / prev_close * 100.0
-    } else {
-        0.0
-    };
+    // Extract OHLC from /ohlc endpoint
+    let prev_close = history_json.as_ref().and_then(|json| {
+        json.get("close").and_then(|v| v.as_f64()).map(|v| v.to_string())
+    });
+    let open_price = history_json.as_ref().and_then(|json| {
+        json.get("open").and_then(|v| v.as_f64()).map(|v| v.to_string())
+    });
+    let high_price = history_json.as_ref().and_then(|json| {
+        json.get("high").and_then(|v| v.as_f64()).map(|v| v.to_string())
+    });
+    let low_price = history_json.as_ref().and_then(|json| {
+        json.get("low").and_then(|v| v.as_f64()).map(|v| v.to_string())
+    });
 
-    let update_ts = json
-        .get("timestamp")
-        .and_then(|v| v.as_i64())
-        .unwrap_or_else(|| Utc::now().timestamp());
+    // change_percent from openCloseChangePercent, formatted as .toFixed(2) + '%'
+    let change_percent = history_json.as_ref().and_then(|json| {
+        json.get("openCloseChangePercent")
+            .and_then(|v| v.as_f64())
+            .map(|v| format!("{:.2}%", v))
+    });
+
+    if price_json.is_none() && history_json.is_none() {
+        return None;
+    }
 
     Some(IAPIRequestResult {
         metal: metal.to_string(),
-        currency: currency.to_string(),
-        update: stamp_to_string(update_ts),
-        prev_close_price: prev_close,
-        open_price,
-        low_price,
-        high_price,
-        price,
-        change_percent,
+        currency: "USD".to_string(),
+        update: update.unwrap_or_else(|| "N/A".to_string()),
+        prev_close_price: prev_close.unwrap_or_else(|| "N/A".to_string()),
+        open_price: open_price.unwrap_or_else(|| "N/A".to_string()),
+        low_price: low_price.unwrap_or_else(|| "N/A".to_string()),
+        high_price: high_price.unwrap_or_else(|| "N/A".to_string()),
+        price: price_str.unwrap_or_else(|| "N/A".to_string()),
+        change_percent: change_percent.unwrap_or_else(|| "N/A".to_string()),
     })
 }
 
@@ -290,19 +391,30 @@ async fn fetch_usd_cny_rate(client: &reqwest::Client, token: &str) -> Option<f64
         }
     };
 
+    let now_ms = Utc::now().timestamp_millis();
     if let Ok(cached) = conn.get::<_, String>(cache_key).await {
-        if let Ok(rate) = cached.parse::<f64>() {
-            log::debug!("[Currency] Using cached USD/CNY rate: {}", rate);
-            return Some(rate);
+        if let Ok(rate_data) = serde_json::from_str::<CachedRateData>(&cached) {
+            if let Some(rate) = rate_data.usd_cny {
+                if (now_ms - rate_data.time) < FETCH_INTERVAL_MS {
+                    log::debug!("[Currency] Using cached USD/CNY rate: {}", rate);
+                    return Some(rate);
+                }
+                log::debug!("[Currency] Cached rate is stale, re-fetching");
+            }
+        } else {
+            if let Ok(rate) = cached.parse::<f64>() {
+                log::debug!("[Currency] Using legacy cached USD/CNY rate: {}", rate);
+                return Some(rate);
+            }
         }
     }
 
     let url = format!(
-        "https://currencyapi.net/api/v2/rates?base=USD&key={}",
+        "https://currencyapi.net/api/v2/rates?base=USD&output=json&key={}",
         token
     );
 
-    for attempt in 0u32..=5 {
+    for attempt in 0u32..=API_REQUEST_RETRIES {
         match client.get(&url).send().await {
             Ok(resp) => match resp.json::<Value>().await {
                 Ok(json) => {
@@ -318,9 +430,21 @@ async fn fetch_usd_cny_rate(client: &reqwest::Client, token: &str) -> Option<f64
                         });
 
                     if let Some(rate_val) = rate {
-                        let _ = conn
-                            .set_ex::<_, _, ()>(cache_key, rate_val.to_string(), 7200)
-                            .await;
+                        let updated = json
+                            .get("updated")
+                            .and_then(|v| v.as_i64())
+                            .unwrap_or(0);
+
+                        let rate_data = CachedRateData {
+                            time: now_ms,
+                            update_time: stamp_to_string(updated * 1000),
+                            usd_cny: Some(rate_val),
+                        };
+
+                        // Store with no expiry (redis SET, not SETEX)
+                        if let Ok(json_str) = serde_json::to_string(&rate_data) {
+                            let _ = conn.set::<_, _, ()>(cache_key, json_str).await;
+                        }
                         log::debug!("[Currency] Fetched USD/CNY rate: {}", rate_val);
                         return Some(rate_val);
                     } else {
@@ -340,8 +464,8 @@ async fn fetch_usd_cny_rate(client: &reqwest::Client, token: &str) -> Option<f64
                 log::warn!("[Currency] Request error (attempt {}): {}", attempt + 1, e);
             }
         }
-        if attempt < 5 {
-            sleep(Duration::from_millis(500 * (attempt as u64 + 1))).await;
+        if attempt < API_REQUEST_RETRIES {
+            sleep(Duration::from_millis(1000)).await;
         }
     }
     None
@@ -352,41 +476,23 @@ async fn fetch_usd_cny_rate(client: &reqwest::Client, token: &str) -> Option<f64
 async fn fetch_all_prices() -> ICachedPriceData {
     let jisu_token = env::var("JISU_API_TOKEN").unwrap_or_default();
     let gold_token = env::var("GOLD_API_TOKEN").unwrap_or_default();
-    let currency_token = env::var("CURRENCY_RATES_API_TOKEN").unwrap_or_default();
 
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
         .build()
         .unwrap_or_default();
 
-    let (jisu_res, goldapi_res, rate_res) = tokio::join!(
+    // Fetch prices from Jisu and GoldAPI in parallel
+    let (jisu_res, goldapi_res) = tokio::join!(
         fetch_jisu_prices(&client, &jisu_token),
         fetch_goldapi_prices(&client, &gold_token),
-        fetch_usd_cny_rate(&client, &currency_token)
     );
 
     let (gold_cny, silver_cny) = jisu_res;
-    let (gold_usd_raw, silver_usd_raw) = goldapi_res;
-
-    let gold_usd = gold_usd_raw.map(|mut g| {
-        if let Some(rate) = rate_res {
-            // price in USD/oz → CNY/g: price * rate / 31.1035
-            let cny_per_gram = g.price * rate / 31.1035;
-            g.currency = format!("USD|CNY_rate={:.4}|CNY_per_gram={:.4}", rate, cny_per_gram);
-        }
-        g
-    });
-
-    let silver_usd = silver_usd_raw.map(|mut s| {
-        if let Some(rate) = rate_res {
-            let cny_per_gram = s.price * rate / 31.1035;
-            s.currency = format!("USD|CNY_rate={:.4}|CNY_per_gram={:.4}", rate, cny_per_gram);
-        }
-        s
-    });
+    let (gold_usd, silver_usd) = goldapi_res;
 
     ICachedPriceData {
-        time: Utc::now().timestamp(),
+        time: window_ts(),
         gold_cny,
         silver_cny,
         gold_usd,
@@ -396,8 +502,12 @@ async fn fetch_all_prices() -> ICachedPriceData {
 
 // ─── Cache helpers ────────────────────────────────────────────────────────────
 
-async fn get_cached_prices() -> Option<ICachedPriceData> {
-    let key = format!("gold:prices:{}", window_ts());
+fn get_cache_key(window: i64) -> String {
+    format!("gold:prices:{}", window)
+}
+
+async fn get_cached_prices(window: i64) -> Option<ICachedPriceData> {
+    let key = get_cache_key(window);
     let mut conn = match redis().await {
         Ok(c) => c.clone(),
         Err(e) => {
@@ -413,155 +523,154 @@ async fn get_cached_prices() -> Option<ICachedPriceData> {
     }
 }
 
-async fn store_cached_prices(data: &ICachedPriceData) {
-    let key = format!("gold:prices:{}", window_ts());
+async fn store_cached_prices(window: i64, data: &ICachedPriceData) {
+    let key = get_cache_key(window);
     let Ok(conn) = redis().await else {
         log::warn!("Redis unavailable");
         return;
     };
     let mut conn = conn.clone();
     if let Ok(json_str) = serde_json::to_string(data) {
-        let _ = conn.set_ex::<_, _, ()>(&key, json_str, 2400).await;
+        let _ = conn.set_ex::<_, _, ()>(&key, json_str, CACHE_EXPIRE).await;
     }
 }
 
-async fn get_or_fetch_prices() -> ICachedPriceData {
-    if let Some(cached) = get_cached_prices().await {
-        log::debug!("[Gold] Using cached price data");
-        return cached;
-    }
-    log::debug!("[Gold] Fetching fresh price data");
-    let data = fetch_all_prices().await;
-    store_cached_prices(&data).await;
-    data
-}
+async fn get_or_fetch_prices() -> (ICachedPriceData, Option<f64>) {
+    let now_ms = Utc::now().timestamp_millis();
+    let window = (now_ms / FETCH_INTERVAL_MS) * FETCH_INTERVAL_MS;
 
-// ─── Format helpers ───────────────────────────────────────────────────────────
-
-pub fn format_price(v: f64, decimals: usize) -> String {
-    format!("{:.prec$}", v, prec = decimals)
-}
-
-pub fn parse_gold_usd_currency(currency_field: &str) -> (f64, f64) {
-    // Parse embedded "USD|CNY_rate=X|CNY_per_gram=Y" encoding in currency field
-    let mut rate = 0.0f64;
-    let mut cny_per_gram = 0.0f64;
-    for part in currency_field.split('|') {
-        if let Some(val) = part.strip_prefix("CNY_rate=") {
-            rate = val.parse::<f64>().unwrap_or(0.0);
-        } else if let Some(val) = part.strip_prefix("CNY_per_gram=") {
-            cny_per_gram = val.parse::<f64>().unwrap_or(0.0);
+    let data = if let Some(cached) = get_cached_prices(window).await {
+        if cached.time + FETCH_INTERVAL_MS > now_ms {
+            log::debug!("[Gold] Cache hit for window {}, using cached prices", window);
+            cached
+        } else {
+            log::debug!("[Gold] Cache stale, fetching fresh price data");
+            let data = fetch_all_prices().await;
+            store_cached_prices(window, &data).await;
+            data
         }
-    }
-    (rate, cny_per_gram)
+    } else {
+        log::debug!("[Gold] Cache miss for window {}, fetching from API...", window);
+        let data = fetch_all_prices().await;
+        store_cached_prices(window, &data).await;
+        data
+    };
+
+    let currency_token = env::var("CURRENCY_RATES_API_TOKEN").unwrap_or_default();
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .build()
+        .unwrap_or_default();
+    let usd_cny_rate = fetch_usd_cny_rate(&client, &currency_token).await;
+
+    (data, usd_cny_rate)
 }
 
-pub fn build_response(data: &ICachedPriceData) -> String {
-    let mut lines: Vec<String> = Vec::new();
+// ─── Format / build response ─────────────────────────────────────────────────
 
-    lines.push("💰 国内金价 数据来源: Jisu API".to_string());
+pub fn build_response(data: &ICachedPriceData, usd_cny_rate: Option<f64>) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // ── Domestic (CNY) ──
+    parts.push("💰 国内金价 数据来源: Jisu API ( https://www.jisuapi.com/ )".to_string());
 
     if let Some(g) = &data.gold_cny {
-        lines.push(format!("黄金价格: {}元/克", format_price(g.price, 2)));
-        lines.push(format!(
+        parts.push(format!("黄金价格: {}元/克", g.price));
+        parts.push(format!(
             "  开盘价: {}元/克 最高价: {}元/克 最低价: {}元/克",
-            format_price(g.open_price, 2),
-            format_price(g.high_price, 2),
-            format_price(g.low_price, 2)
+            g.open_price, g.high_price, g.low_price
         ));
-        lines.push(format!(
+        parts.push(format!(
             "  涨跌幅: {}% 昨收价: {}元/克 更新时间: {}",
-            format_price(g.change_percent, 2),
-            format_price(g.prev_close_price, 2),
-            g.update
+            g.change_percent, g.prev_close_price, g.update
         ));
     } else {
-        lines.push("黄金价格: 暂无数据".to_string());
+        parts.push("黄金价格: 暂无数据".to_string());
     }
+
+    parts.push(String::new());
 
     if let Some(s) = &data.silver_cny {
-        lines.push(format!("白银价格: {}元/克", format_price(s.price, 2)));
-        lines.push(format!(
+        parts.push(format!("白银价格: {}元/克", s.price));
+        parts.push(format!(
             "  开盘价: {}元/克 最高价: {}元/克 最低价: {}元/克",
-            format_price(s.open_price, 2),
-            format_price(s.high_price, 2),
-            format_price(s.low_price, 2)
+            s.open_price, s.high_price, s.low_price
         ));
-        lines.push(format!(
+        parts.push(format!(
             "  涨跌幅: {}% 昨收价: {}元/克 更新时间: {}",
-            format_price(s.change_percent, 2),
-            format_price(s.prev_close_price, 2),
-            s.update
+            s.change_percent, s.prev_close_price, s.update
         ));
     } else {
-        lines.push("白银价格: 暂无数据".to_string());
+        parts.push("白银价格: 暂无数据".to_string());
     }
 
-    lines.push("💰 国际金价 数据来源: GoldAPI 汇率数据来源: 汇率 API".to_string());
+    parts.push(String::new());
+
+    // ── International (USD) ──
+    parts.push(
+        "💰 国际金价 数据来源: GoldAPI ( https://gold-api.com/ ) 汇率数据来源: 汇率 API ( https://currencyapi.net/ )"
+            .to_string(),
+    );
 
     if let Some(g) = &data.gold_usd {
-        let (rate, cny_per_gram) = parse_gold_usd_currency(&g.currency);
-        let usd_line = format!(
-            "黄金美元价格: {} USD/盎司{}",
-            format_price(g.price, 2),
-            if cny_per_gram > 0.0 {
-                format!(" 折合 {}元/克", format_price(cny_per_gram, 2))
+        let cny_str = if let Some(rate) = usd_cny_rate {
+            if let Ok(price_f) = g.price.parse::<f64>() {
+                format!("{:.2}", price_f * rate / OUNCE_TO_GRAM)
             } else {
-                String::new()
+                "N/A".to_string()
             }
-        );
-        lines.push(usd_line);
-        lines.push(format!(
+        } else {
+            "N/A".to_string()
+        };
+
+        parts.push(format!(
+            "黄金美元价格: {} USD/盎司 折合 {}元/克",
+            g.price, cny_str
+        ));
+        parts.push(format!(
             "  开盘价: {} USD/盎司 最高价: {} USD/盎司 最低价: {} USD/盎司",
-            format_price(g.open_price, 2),
-            format_price(g.high_price, 2),
-            format_price(g.low_price, 2)
+            g.open_price, g.high_price, g.low_price
         ));
-        lines.push(format!(
+        parts.push(format!(
             "  涨跌幅: {}% 昨收价: {} USD/盎司 更新时间: {}",
-            format_price(g.change_percent, 2),
-            format_price(g.prev_close_price, 2),
-            g.update
+            g.change_percent, g.prev_close_price, g.update
         ));
-        if rate > 0.0 {
-            lines.push(format!("  USD/CNY 汇率: {}", format_price(rate, 4)));
-        }
     } else {
-        lines.push("黄金美元价格: 暂无数据".to_string());
+        parts.push("黄金美元价格: 暂无数据".to_string());
     }
+
+    parts.push(String::new());
 
     if let Some(s) = &data.silver_usd {
-        let (rate, cny_per_gram) = parse_gold_usd_currency(&s.currency);
-        let usd_line = format!(
-            "白银美元价格: {} USD/盎司{}",
-            format_price(s.price, 2),
-            if cny_per_gram > 0.0 {
-                format!(" 折合 {}元/克", format_price(cny_per_gram, 2))
+        let cny_str = if let Some(rate) = usd_cny_rate {
+            if let Ok(price_f) = s.price.parse::<f64>() {
+                format!("{:.2}", price_f * rate / OUNCE_TO_GRAM)
             } else {
-                String::new()
+                "N/A".to_string()
             }
-        );
-        lines.push(usd_line);
-        lines.push(format!(
+        } else {
+            "N/A".to_string()
+        };
+
+        parts.push(format!(
+            "白银美元价格: {} USD/盎司 折合 {}元/克",
+            s.price, cny_str
+        ));
+        parts.push(format!(
             "  开盘价: {} USD/盎司 最高价: {} USD/盎司 最低价: {} USD/盎司",
-            format_price(s.open_price, 2),
-            format_price(s.high_price, 2),
-            format_price(s.low_price, 2)
+            s.open_price, s.high_price, s.low_price
         ));
-        lines.push(format!(
+        parts.push(format!(
             "  涨跌幅: {}% 昨收价: {} USD/盎司 更新时间: {}",
-            format_price(s.change_percent, 2),
-            format_price(s.prev_close_price, 2),
-            s.update
+            s.change_percent, s.prev_close_price, s.update
         ));
-        if rate > 0.0 {
-            lines.push(format!("  USD/CNY 汇率: {}", format_price(rate, 4)));
-        }
     } else {
-        lines.push("白银美元价格: 暂无数据".to_string());
+        parts.push("白银美元价格: 暂无数据".to_string());
     }
 
-    lines.join("\n")
+    parts.push(String::new());
+
+    parts.join("\n")
 }
 
 // ─── Feature impl ─────────────────────────────────────────────────────────────
@@ -594,8 +703,8 @@ impl Feature for GoldFeature {
         _context: &MessageContext,
         _msg: &Value,
     ) -> Option<MessageSegment> {
-        let data = get_or_fetch_prices().await;
-        let response = build_response(&data);
+        let (data, usd_cny_rate) = get_or_fetch_prices().await;
+        let response = build_response(&data, usd_cny_rate);
         Some(MessageSegment::Text {
             data: bot_lib::structs::TextData { text: response },
         })

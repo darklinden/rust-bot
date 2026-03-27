@@ -9,7 +9,8 @@ fn stamp_to_string_basic() {
 
 #[test]
 fn stamp_to_string_known_date() {
-    let _ts = 1740225600;
+    let result = bot_run::gold::stamp_to_string(1740225600_000);
+    assert_eq!(result, "2025-02-22 20:00");
 }
 
 #[test]
@@ -23,41 +24,18 @@ fn format_price_zero_decimals() {
 
 #[test]
 fn format_price_two_decimals() {
-    let _result = bot_run::gold::format_price(123.456, 2);
+    let result = bot_run::gold::format_price(123.456, 2);
+    assert_eq!(result, "123.46");
 }
 
 #[test]
 fn format_price_four_decimals() {
-    let _result = bot_run::gold::format_price(123.456789, 4);
-}
-
-#[test]
-fn parse_gold_usd_currency_full() {
-    let field = "USD|CNY_rate=6.8923|CNY_per_gram=221.75";
-    let (rate, cny) = bot_run::gold::parse_gold_usd_currency(field);
-    assert!((rate - 6.8923).abs() < 0.0001);
-    assert!((cny - 221.75).abs() < 0.001);
-}
-
-#[test]
-fn parse_gold_usd_currency_partial() {
-    let field = "USD|CNY_rate=7.0|CNY_per_gram=225.0";
-    let (rate, cny) = bot_run::gold::parse_gold_usd_currency(field);
-    assert!((rate - 7.0).abs() < 0.001);
-    assert!((cny - 225.0).abs() < 0.001);
-}
-
-#[test]
-fn parse_gold_usd_currency_empty() {
-    let field = "USD";
-    let (rate, cny) = bot_run::gold::parse_gold_usd_currency(field);
-    assert_eq!(rate, 0.0);
-    assert_eq!(cny, 0.0);
+    let result = bot_run::gold::format_price(123.456789, 4);
+    assert_eq!(result, "123.4568");
 }
 
 #[test]
 fn parse_f64_from_number() {
-    use serde_json::json;
     let v = json!(123.45);
     let result = bot_run::gold::parse_f64(&v);
     assert!((result - 123.45).abs() < 0.001);
@@ -65,7 +43,6 @@ fn parse_f64_from_number() {
 
 #[test]
 fn parse_f64_from_string() {
-    use serde_json::json;
     let v = json!("678.90");
     let result = bot_run::gold::parse_f64(&v);
     assert!((result - 678.90).abs() < 0.001);
@@ -73,7 +50,6 @@ fn parse_f64_from_string() {
 
 #[test]
 fn parse_f64_from_invalid() {
-    use serde_json::json;
     let v = json!(null);
     let result = bot_run::gold::parse_f64(&v);
     assert_eq!(result, 0.0);
@@ -84,51 +60,57 @@ fn build_response_with_all_data() {
     use bot_run::gold::{build_response, IAPIRequestResult, ICachedPriceData};
 
     let data = ICachedPriceData {
-        time: 1740225600,
+        time: 1740225600_000,
         gold_cny: Some(IAPIRequestResult {
             metal: "XAU".to_string(),
             currency: "CNY".to_string(),
             update: "2026-03-24 20:00".to_string(),
-            prev_close_price: 960.0,
-            open_price: 965.0,
-            high_price: 970.0,
-            low_price: 955.0,
-            price: 968.0,
-            change_percent: 0.83,
+            prev_close_price: "960.00".to_string(),
+            open_price: "965.00".to_string(),
+            high_price: "970.00".to_string(),
+            low_price: "955.00".to_string(),
+            price: "968.00".to_string(),
+            change_percent: "0.83".to_string(),
         }),
         silver_cny: Some(IAPIRequestResult {
             metal: "XAG".to_string(),
             currency: "CNY".to_string(),
             update: "2026-03-24 20:00".to_string(),
-            prev_close_price: 15.5,
-            open_price: 15.6,
-            high_price: 15.8,
-            low_price: 15.4,
-            price: 15.7,
-            change_percent: 1.29,
+            prev_close_price: "15.50".to_string(),
+            open_price: "15.60".to_string(),
+            high_price: "15.80".to_string(),
+            low_price: "15.40".to_string(),
+            price: "15.70".to_string(),
+            change_percent: "1.29".to_string(),
         }),
         gold_usd: Some(IAPIRequestResult {
             metal: "XAU".to_string(),
-            currency: "USD|CNY_rate=6.8923|CNY_per_gram=221.75".to_string(),
+            currency: "USD".to_string(),
             update: "2026-03-24 12:00".to_string(),
-            prev_close_price: 4350.0,
-            open_price: 4340.0,
-            high_price: 4370.0,
-            low_price: 4330.0,
-            price: 4356.0,
-            change_percent: 0.14,
+            prev_close_price: "4350".to_string(),
+            open_price: "4340".to_string(),
+            high_price: "4370".to_string(),
+            low_price: "4330".to_string(),
+            price: "4356".to_string(),
+            change_percent: "0.14%".to_string(),
         }),
         silver_usd: None,
     };
 
-    let response = build_response(&data);
+    let response = build_response(&data, Some(6.8923));
 
-    assert!(response.contains("💰 国内金价 数据来源: Jisu API"));
+    assert!(response.contains("💰 国内金价 数据来源: Jisu API ( https://www.jisuapi.com/ )"));
     assert!(response.contains("黄金价格: 968.00元/克"));
     assert!(response.contains("白银价格: 15.70元/克"));
-    assert!(response.contains("💰 国际金价 数据来源: GoldAPI"));
-    assert!(response.contains("黄金美元价格: 4356.00 USD/盎司 折合 221.75元/克"));
-    assert!(response.contains("USD/CNY 汇率: 6.8923"));
+    assert!(response.contains("💰 国际金价 数据来源: GoldAPI ( https://gold-api.com/ ) 汇率数据来源: 汇率 API ( https://currencyapi.net/ )"));
+    // 4356 * 6.8923 / 31.1035 ≈ 965.00
+    let cny_converted = 4356.0 * 6.8923 / 31.1035;
+    let cny_str = format!("{:.2}", cny_converted);
+    assert!(response.contains(&format!(
+        "黄金美元价格: 4356 USD/盎司 折合 {}元/克",
+        cny_str
+    )));
+    assert!(response.contains("白银美元价格: 暂无数据"));
 }
 
 #[test]
@@ -143,7 +125,7 @@ fn build_response_with_no_data() {
         silver_usd: None,
     };
 
-    let response = build_response(&data);
+    let response = build_response(&data, None);
     assert!(response.contains("暂无数据"));
 }
 
@@ -157,22 +139,48 @@ fn build_response_partial_data() {
             metal: "XAU".to_string(),
             currency: "CNY".to_string(),
             update: "N/A".to_string(),
-            prev_close_price: 0.0,
-            open_price: 0.0,
-            high_price: 0.0,
-            low_price: 0.0,
-            price: 0.0,
-            change_percent: 0.0,
+            prev_close_price: "0.00".to_string(),
+            open_price: "0.00".to_string(),
+            high_price: "0.00".to_string(),
+            low_price: "0.00".to_string(),
+            price: "0.00".to_string(),
+            change_percent: "0.00".to_string(),
         }),
         silver_cny: None,
         gold_usd: None,
         silver_usd: None,
     };
 
-    let response = build_response(&data);
+    let response = build_response(&data, None);
     assert!(response.contains("黄金价格: 0.00元/克"));
     assert!(response.contains("白银价格: 暂无数据"));
     assert!(response.contains("黄金美元价格: 暂无数据"));
+}
+
+#[test]
+fn build_response_no_rate() {
+    use bot_run::gold::{build_response, IAPIRequestResult, ICachedPriceData};
+
+    let data = ICachedPriceData {
+        time: 0,
+        gold_cny: None,
+        silver_cny: None,
+        gold_usd: Some(IAPIRequestResult {
+            metal: "XAU".to_string(),
+            currency: "USD".to_string(),
+            update: "2026-03-24 12:00".to_string(),
+            prev_close_price: "4350".to_string(),
+            open_price: "4340".to_string(),
+            high_price: "4370".to_string(),
+            low_price: "4330".to_string(),
+            price: "4356".to_string(),
+            change_percent: "0.14%".to_string(),
+        }),
+        silver_usd: None,
+    };
+
+    let response = build_response(&data, None);
+    assert!(response.contains("折合 N/A元/克"));
 }
 
 fn gold_text_msg(content: &str) -> serde_json::Value {

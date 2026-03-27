@@ -84,7 +84,7 @@ impl Feature for JrrpFeature {
         let comment = self.get_luck_comment(luck);
         let name = context.display_name();
 
-        let response = format!("rust-bot: {} 的今日人品是：{}。{}", name, luck, comment);
+        let response = format!("{} 的今日人品是：{}。{}", name, luck, comment);
         Some(msg_segment_from_string(response))
     }
 }

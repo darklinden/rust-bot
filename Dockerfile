@@ -17,3 +17,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=rust-builder /usr/src/app/target/release/bot_run /app/bot_run
+
+ENTRYPOINT ["/app/bot_run"]
