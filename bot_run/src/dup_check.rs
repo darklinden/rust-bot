@@ -118,7 +118,7 @@ pub async fn ensure_vector_indexes() -> bool {
         .await;
     if let Err(e) = idx_img {
         let msg = e.to_string();
-        if !msg.contains("Index already exists") {
+        if !msg.contains("already exists") {
             log::warn!(
                 "Redis Stack not available, falling back to KEYS scan (slower): {}",
                 e
@@ -132,7 +132,7 @@ pub async fn ensure_vector_indexes() -> bool {
         .await;
     if let Err(e) = idx_emj {
         let msg = e.to_string();
-        if !msg.contains("Index already exists") {
+        if !msg.contains("already exists") {
             log::warn!(
                 "Redis Stack not available, falling back to KEYS scan (slower): {}",
                 e
