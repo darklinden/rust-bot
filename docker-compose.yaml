@@ -1,0 +1,59 @@
+# docker-compose.yml
+# NAPCAT_UID=$(id -u) NAPCAT_GID=$(id -g) docker-compose -f ./compose/ws.yml up -d
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:v4.17.5
+    container_name: napcat
+    restart: always
+    mac_address: 02:42:ac:11:00:02 # 添加MAC地址固化配置
+
+    environment:
+      - NAPCAT_UID=${NAPCAT_UID}
+      - NAPCAT_GID=${NAPCAT_GID}
+      - ACCOUNT=${ACCOUNT}
+
+    ports:
+      - 3001:3001
+      - 6099:6099
+
+    volumes:
+      - ./napcat/config:/app/napcat/config
+      - ./ntqq:/app/.config/QQ
+
+  redis:
+    image: redis/redis-stack-server:7.4.0-v8-x86_64
+    container_name: redis
+    restart: always
+    mac_address: 02:42:ac:11:00:04 # 添加MAC地址固化配置
+
+    volumes:
+      - ./redis:/data
+
+    ports:
+      - "6379:6379" # Redis server
+      - "8001:8001" # RedisInsight (optional)
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  bot:
+    image: qq-bot:0.0.1
+    container_name: bot
+    restart: always
+    mac_address: 02:42:ac:11:00:03 # 添加MAC地址固化配置
+
+    environment:
+      - NAPCAT_WS_URL=ws://napcat:3001
+      - REDIS_URL=redis://redis:6379
+      - NAPCAT_ACCESS_TOKEN=${NAPCAT_ACCESS_TOKEN}
+      - JISU_API_TOKEN=${JISU_API_TOKEN}
+      - GOLD_API_TOKEN=${GOLD_API_TOKEN}
+      - CURRENCY_RATES_API_TOKEN=${CURRENCY_RATES_API_TOKEN}
+      - COMFY_UI_URL=${COMFY_UI_URL}
+
+    depends_on:
+      - napcat
+      - redis
