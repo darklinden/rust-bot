@@ -1,3 +1,5 @@
+use std::env;
+
 use async_trait::async_trait;
 use bot_lib::structs::MessageSegment;
 use serde_json::Value;
@@ -71,8 +73,12 @@ pub trait Feature: Send + Sync {
     ) -> Option<MessageSegment>;
 }
 
+static MSG_PREFIX: once_cell::sync::Lazy<String> =
+    once_cell::sync::Lazy::new(|| env::var("BOT_MESSAGE_PREFIX").unwrap_or_default() + " ");
 pub fn msg_segment_from_string(text: String) -> MessageSegment {
     MessageSegment::Text {
-        data: bot_lib::structs::TextData { text },
+        data: bot_lib::structs::TextData {
+            text: format!("{}{}", MSG_PREFIX.clone(), text),
+        },
     }
 }

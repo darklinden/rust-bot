@@ -1,4 +1,5 @@
 use crate::feature::{Feature, MessageContext};
+use crate::msg_segment_from_string;
 use crate::redis_client::redis;
 use async_trait::async_trait;
 use bot_lib::structs::MessageSegment;
@@ -152,9 +153,13 @@ async fn fetch_jisu_prices(
 
 fn parse_jisu_gold_response(resp: Option<Value>) -> Option<IAPIRequestResult> {
     let json = resp?;
-    let status = json.get("status").and_then(|v| {
-        v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
-    }).unwrap_or(-1);
+    let status = json
+        .get("status")
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+        })
+        .unwrap_or(-1);
     if status != 0 {
         log::warn!("[Jisu] Non-zero status for gold: {}", status);
         return None;
@@ -173,7 +178,8 @@ fn parse_jisu_gold_response(resp: Option<Value>) -> Option<IAPIRequestResult> {
         metal: "XAU".to_string(),
         currency: "CNY".to_string(),
         update: item.updatetime.clone(),
-        prev_close_price: value_to_string(&item.lastclosingprice).unwrap_or_else(|| "N/A".to_string()),
+        prev_close_price: value_to_string(&item.lastclosingprice)
+            .unwrap_or_else(|| "N/A".to_string()),
         open_price: value_to_string(&item.openingprice).unwrap_or_else(|| "N/A".to_string()),
         low_price: value_to_string(&item.minprice).unwrap_or_else(|| "N/A".to_string()),
         high_price: value_to_string(&item.maxprice).unwrap_or_else(|| "N/A".to_string()),
@@ -184,9 +190,13 @@ fn parse_jisu_gold_response(resp: Option<Value>) -> Option<IAPIRequestResult> {
 
 fn parse_jisu_silver_response(resp: Option<Value>) -> Option<IAPIRequestResult> {
     let json = resp?;
-    let status = json.get("status").and_then(|v| {
-        v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
-    }).unwrap_or(-1);
+    let status = json
+        .get("status")
+        .and_then(|v| {
+            v.as_i64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<i64>().ok()))
+        })
+        .unwrap_or(-1);
     if status != 0 {
         log::warn!("[Jisu] Non-zero status for silver: {}", status);
         return None;
@@ -343,16 +353,24 @@ fn build_goldapi_result(
 
     // Extract OHLC from /ohlc endpoint
     let prev_close = history_json.as_ref().and_then(|json| {
-        json.get("close").and_then(|v| v.as_f64()).map(|v| v.to_string())
+        json.get("close")
+            .and_then(|v| v.as_f64())
+            .map(|v| v.to_string())
     });
     let open_price = history_json.as_ref().and_then(|json| {
-        json.get("open").and_then(|v| v.as_f64()).map(|v| v.to_string())
+        json.get("open")
+            .and_then(|v| v.as_f64())
+            .map(|v| v.to_string())
     });
     let high_price = history_json.as_ref().and_then(|json| {
-        json.get("high").and_then(|v| v.as_f64()).map(|v| v.to_string())
+        json.get("high")
+            .and_then(|v| v.as_f64())
+            .map(|v| v.to_string())
     });
     let low_price = history_json.as_ref().and_then(|json| {
-        json.get("low").and_then(|v| v.as_f64()).map(|v| v.to_string())
+        json.get("low")
+            .and_then(|v| v.as_f64())
+            .map(|v| v.to_string())
     });
 
     // change_percent from openCloseChangePercent, formatted as .toFixed(2) + '%'
@@ -401,11 +419,9 @@ async fn fetch_usd_cny_rate(client: &reqwest::Client, token: &str) -> Option<f64
                 }
                 log::debug!("[Currency] Cached rate is stale, re-fetching");
             }
-        } else {
-            if let Ok(rate) = cached.parse::<f64>() {
-                log::debug!("[Currency] Using legacy cached USD/CNY rate: {}", rate);
-                return Some(rate);
-            }
+        } else if let Ok(rate) = cached.parse::<f64>() {
+            log::debug!("[Currency] Using legacy cached USD/CNY rate: {}", rate);
+            return Some(rate);
         }
     }
 
@@ -430,10 +446,7 @@ async fn fetch_usd_cny_rate(client: &reqwest::Client, token: &str) -> Option<f64
                         });
 
                     if let Some(rate_val) = rate {
-                        let updated = json
-                            .get("updated")
-                            .and_then(|v| v.as_i64())
-                            .unwrap_or(0);
+                        let updated = json.get("updated").and_then(|v| v.as_i64()).unwrap_or(0);
 
                         let rate_data = CachedRateData {
                             time: now_ms,
@@ -541,7 +554,10 @@ async fn get_or_fetch_prices() -> (ICachedPriceData, Option<f64>) {
 
     let data = if let Some(cached) = get_cached_prices(window).await {
         if cached.time + FETCH_INTERVAL_MS > now_ms {
-            log::debug!("[Gold] Cache hit for window {}, using cached prices", window);
+            log::debug!(
+                "[Gold] Cache hit for window {}, using cached prices",
+                window
+            );
             cached
         } else {
             log::debug!("[Gold] Cache stale, fetching fresh price data");
@@ -550,7 +566,10 @@ async fn get_or_fetch_prices() -> (ICachedPriceData, Option<f64>) {
             data
         }
     } else {
-        log::debug!("[Gold] Cache miss for window {}, fetching from API...", window);
+        log::debug!(
+            "[Gold] Cache miss for window {}, fetching from API...",
+            window
+        );
         let data = fetch_all_prices().await;
         store_cached_prices(window, &data).await;
         data
@@ -705,8 +724,6 @@ impl Feature for GoldFeature {
     ) -> Option<MessageSegment> {
         let (data, usd_cny_rate) = get_or_fetch_prices().await;
         let response = build_response(&data, usd_cny_rate);
-        Some(MessageSegment::Text {
-            data: bot_lib::structs::TextData { text: response },
-        })
+        Some(msg_segment_from_string(response))
     }
 }

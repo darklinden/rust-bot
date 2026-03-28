@@ -300,6 +300,8 @@ dependencies = [
  "image",
  "imagehash",
  "log",
+ "num-bigint",
+ "num-traits",
  "once_cell",
  "rand 0.10.0",
  "redis",

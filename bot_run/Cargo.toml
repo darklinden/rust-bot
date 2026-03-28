@@ -30,6 +30,8 @@ thiserror.workspace = true
 async-trait.workspace = true
 rand = "0.10.0"
 tempfile.workspace = true
+num-traits = "0.2.19"
+num-bigint = "0.4.6"
 
 [lints.rust]
 unsafe_code = "forbid"

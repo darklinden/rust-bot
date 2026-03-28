@@ -24,6 +24,11 @@ fn check_text_command(msg: &Value, prefixes: &[&str]) -> bool {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
+    // for item in dotenvy::dotenv_iter()? {
+    //     let (key, val) = item?;
+    //     println!("{}={}", key, val);
+    // }
+
     logger::init();
     logger::set_level(log::LevelFilter::Debug);
 
@@ -68,14 +73,34 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut sd_rx) = mpsc::channel::<SdImageResult>(32);
     let ws_sd = ws_arc.clone();
 
-    let features: Vec<Arc<dyn Feature + Send + Sync>> = vec![
-        Arc::new(bot_run::choice::ChoiceFeature),
-        Arc::new(bot_run::jrrp::JrrpFeature),
-        Arc::new(bot_run::dup_check::DupCheckFeature::new()),
-        Arc::new(bot_run::draw5k::Draw5kFeature),
-        Arc::new(bot_run::gold::GoldFeature),
-        Arc::new(SdImageFeature::new(tx)),
-    ];
+    let mut features: Vec<Arc<dyn Feature + Send + Sync>> = vec![];
+
+    let features_enabled: Vec<String> = env::var("FEATURES_ENABLED")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    for feat in &features_enabled {
+        match feat.trim() {
+            "choice" => features
+                .push(Arc::new(bot_run::choice::ChoiceFeature) as Arc<dyn Feature + Send + Sync>),
+            "draw5k" => features
+                .push(Arc::new(bot_run::draw5k::Draw5kFeature) as Arc<dyn Feature + Send + Sync>),
+            "dup_check" => features.push(Arc::new(bot_run::dup_check::DupCheckFeature::new())
+                as Arc<dyn Feature + Send + Sync>),
+            "gold" => features
+                .push(Arc::new(bot_run::gold::GoldFeature) as Arc<dyn Feature + Send + Sync>),
+            "jrrp" => features
+                .push(Arc::new(bot_run::jrrp::JrrpFeature) as Arc<dyn Feature + Send + Sync>),
+            "loli" => features
+                .push(Arc::new(bot_run::loli::LoliFeature) as Arc<dyn Feature + Send + Sync>),
+            "sdimage" => features
+                .push(Arc::new(SdImageFeature::new(tx.clone())) as Arc<dyn Feature + Send + Sync>),
+            _ => log::warn!("Unknown feature '{}' in FEATURES_ENABLED", feat),
+        }
+    }
 
     let features: Arc<Vec<Arc<dyn Feature + Send + Sync>>> = Arc::new(features);
 

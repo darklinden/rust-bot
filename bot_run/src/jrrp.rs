@@ -2,6 +2,8 @@ use crate::feature::{msg_segment_from_string, Feature, MessageContext};
 use async_trait::async_trait;
 use bot_lib::structs::MessageSegment;
 use chrono::Utc;
+use num_bigint::BigUint;
+use num_traits::ToPrimitive;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -9,17 +11,20 @@ pub struct JrrpFeature;
 
 impl JrrpFeature {
     pub fn get_luck_value(&self, user_id: i64) -> i32 {
-        let day_timestamp = Utc::now().timestamp() / 86400;
-        let hash_input = format!("{}{}{}", user_id, day_timestamp, "42");
+        let day_timestamp = (Utc::now().timestamp() + (8 * 3600)) / 86400; // 以北京时间为基准
 
         let mut hasher = Sha256::new();
-        hasher.update(hash_input.as_bytes());
+        hasher.update(user_id.to_string().as_bytes());
+        hasher.update(day_timestamp.to_string().as_bytes());
+        hasher.update("42".as_bytes());
         let hash_result = hasher.finalize();
 
         let hash_hex = format!("{:x}", hash_result);
-        let hash_num = u32::from_str_radix(&hash_hex[..8.min(hash_hex.len())], 16).unwrap_or(0);
+        let big = BigUint::parse_bytes(&hash_hex.as_bytes(), 16).unwrap();
+        let float_val = big.to_f64().unwrap(); // This will be imprecise for large values
+        let luck_value = (float_val % 101.0) as u32;
 
-        (hash_num % 101) as i32
+        luck_value as i32
     }
 
     pub fn get_luck_comment(&self, luck: i32) -> String {

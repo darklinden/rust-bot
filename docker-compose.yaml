@@ -52,6 +52,11 @@ services:
       - JISU_API_TOKEN=${JISU_API_TOKEN}
       - GOLD_API_TOKEN=${GOLD_API_TOKEN}
       - CURRENCY_RATES_API_TOKEN=${CURRENCY_RATES_API_TOKEN}
+
+      - OPENAI_BASE_URL=
+      - OPENAI_API_KEY=
+      - OPENAI_API_MODEL=
+
       - COMFY_UI_URL=${COMFY_UI_URL}
 
     depends_on:

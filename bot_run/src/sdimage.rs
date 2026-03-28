@@ -1,5 +1,5 @@
+use crate::feature::{msg_segment_from_string, Feature, MessageContext};
 use async_trait::async_trait;
-use crate::feature::{Feature, MessageContext};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use bot_lib::structs::{ImageData, MessageSegment};
 
@@ -107,7 +107,14 @@ impl SdParams {
             return None;
         }
 
-        Some(SdParams { prompt, model, negative, sampler, cfg, steps })
+        Some(SdParams {
+            prompt,
+            model,
+            negative,
+            sampler,
+            cfg,
+            steps,
+        })
     }
 }
 
@@ -163,12 +170,6 @@ pub fn build_workflow(params: &SdParams) -> Value {
     })
 }
 
-fn text_segment(text: String) -> MessageSegment {
-    MessageSegment::Text {
-        data: bot_lib::structs::TextData { text },
-    }
-}
-
 async fn poll_and_deliver(
     comfy_url: String,
     prompt_id: String,
@@ -195,7 +196,7 @@ async fn poll_and_deliver(
             let _ = sender
                 .send(SdImageResult {
                     context,
-                    segment: text_segment(format!(
+                    segment: msg_segment_from_string(format!(
                         "图片生成超时 (提示ID: {})，请稍后重试。",
                         prompt_id
                     )),
@@ -245,7 +246,7 @@ async fn poll_and_deliver(
                 let _ = sender
                     .send(SdImageResult {
                         context,
-                        segment: text_segment(format!(
+                        segment: msg_segment_from_string(format!(
                             "图片生成完成但未找到输出文件 (提示ID: {})。",
                             prompt_id
                         )),
@@ -271,7 +272,7 @@ async fn poll_and_deliver(
                     let _ = sender
                         .send(SdImageResult {
                             context,
-                            segment: text_segment(format!(
+                            segment: msg_segment_from_string(format!(
                                 "图片下载失败 (提示ID: {})：{}",
                                 prompt_id, e
                             )),
@@ -285,7 +286,7 @@ async fn poll_and_deliver(
                 let _ = sender
                     .send(SdImageResult {
                         context,
-                        segment: text_segment(format!(
+                        segment: msg_segment_from_string(format!(
                             "图片下载失败 (提示ID: {})：{}",
                             prompt_id, e
                         )),
@@ -379,14 +380,14 @@ impl Feature for SdImageFeature {
         let params = match SdParams::parse(&text) {
             Some(p) => p,
             None => {
-                return Some(text_segment(
+                return Some(msg_segment_from_string(
                     "用法: sd <prompt> [|model=xl] [|negative=...] [|sampler=euler_ancestral] [|cfg=7] [|steps=20]".to_string(),
                 ));
             }
         };
 
-        let comfy_url = env::var("COMFY_UI_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:8188".to_string());
+        let comfy_url =
+            env::var("COMFY_UI_URL").unwrap_or_else(|_| "http://127.0.0.1:8188".to_string());
 
         let resp = match reqwest::Client::new()
             .post(format!("{}/prompt", comfy_url))
@@ -396,35 +397,36 @@ impl Feature for SdImageFeature {
         {
             Ok(r) => r,
             Err(e) => {
-                return Some(text_segment(format!("无法连接到 ComfyUI：{}", e)));
+                return Some(msg_segment_from_string(format!(
+                    "无法连接到 ComfyUI：{}",
+                    e
+                )));
             }
         };
 
         let resp_json: Value = match resp.json().await {
             Ok(v) => v,
             Err(e) => {
-                return Some(text_segment(format!("ComfyUI 返回了无效响应：{}", e)));
+                return Some(msg_segment_from_string(format!(
+                    "ComfyUI 返回了无效响应：{}",
+                    e
+                )));
             }
         };
 
         let prompt_id = match resp_json.get("prompt_id").and_then(|v| v.as_str()) {
             Some(id) => id.to_string(),
             None => {
-                return Some(text_segment(format!(
+                return Some(msg_segment_from_string(format!(
                     "ComfyUI 未返回 prompt_id，响应：{}",
                     resp_json
                 )));
             }
         };
 
-        tokio::spawn(poll_and_deliver(
-            comfy_url,
-            prompt_id.clone(),
-            ctx,
-            sender,
-        ));
+        tokio::spawn(poll_and_deliver(comfy_url, prompt_id.clone(), ctx, sender));
 
-        Some(text_segment(format!(
+        Some(msg_segment_from_string(format!(
             "已收到请求，正在生成图片... (提示ID: {})",
             prompt_id
         )))

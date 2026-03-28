@@ -312,7 +312,7 @@ impl Feature for DupCheckFeature {
                 .await;
 
             if let Ok(vec) = res {
-                if let Some(redis::Value::Int(count)) = vec.get(0) {
+                if let Some(redis::Value::Int(count)) = vec.first() {
                     if *count > 0 {
                         log::debug!("Image matches emoji key, skipping");
                         return None;
@@ -339,7 +339,7 @@ impl Feature for DupCheckFeature {
                 .await;
 
             if let Ok(vec) = res {
-                if let Some(redis::Value::Int(count)) = vec.get(0) {
+                if let Some(redis::Value::Int(count)) = vec.first() {
                     if *count > 0 && vec.len() >= 3 {
                         if let redis::Value::Array(ref fields) = vec[2] {
                             let mut record_sender = String::from("N/A");
@@ -428,7 +428,7 @@ impl Feature for DupCheckFeature {
             }
         } else {
             let emoji_keys: Vec<String> = conn
-                .keys(&format!("{}*", EMOJI_KEY_PREFIX))
+                .keys(format!("{}*", EMOJI_KEY_PREFIX))
                 .await
                 .unwrap_or_default();
             for key in emoji_keys {
@@ -441,7 +441,7 @@ impl Feature for DupCheckFeature {
             }
 
             let image_keys: Vec<String> = conn
-                .keys(&format!("{}*", IMAGE_KEY_PREFIX))
+                .keys(format!("{}*", IMAGE_KEY_PREFIX))
                 .await
                 .unwrap_or_default();
             for key in image_keys {
