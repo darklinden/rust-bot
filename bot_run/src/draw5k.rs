@@ -1,4 +1,5 @@
 use crate::feature::{Feature, MessageContext};
+use ab_glyph::{FontRef, PxScale};
 use async_trait::async_trait;
 use base64::Engine;
 use bot_lib::structs::{MessageSegment, Segment};
@@ -7,249 +8,17 @@ use serde_json::Value;
 
 pub struct Draw5kFeature;
 
-// 5×7 pixel bitmap font covering ASCII 32–126.
-// Each character occupies 7 consecutive bytes; each byte encodes one row of 5 pixels
-// with the most-significant bit on the left.  The first entry is the space character
-// (ASCII 32) and entries are laid out sequentially so that the glyph for character C
-// starts at byte ((C as usize - 32) * 7).
-static FONT_5X7: &[u8] = &[
-    // ' ' (32)
-    0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, // '!' (33)
-    0b00100, 0b00100, 0b00100, 0b00100, 0b00000, 0b00100, 0b00000, // '"' (34)
-    0b01010, 0b01010, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, // '#' (35)
-    0b01010, 0b11111, 0b01010, 0b01010, 0b11111, 0b01010, 0b00000, // '$' (36)
-    0b00100, 0b01110, 0b10100, 0b01110, 0b00101, 0b11110, 0b00100, // '%' (37)
-    0b11000, 0b11001, 0b00010, 0b00100, 0b01000, 0b10011, 0b00011, // '&' (38)
-    0b01000, 0b10100, 0b10100, 0b01000, 0b10101, 0b10010, 0b01101, // '\'' (39)
-    0b00100, 0b00100, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, // '(' (40)
-    0b00010, 0b00100, 0b01000, 0b01000, 0b01000, 0b00100, 0b00010, // ')' (41)
-    0b01000, 0b00100, 0b00010, 0b00010, 0b00010, 0b00100, 0b01000, // '*' (42)
-    0b00000, 0b00100, 0b10101, 0b01110, 0b10101, 0b00100, 0b00000, // '+' (43)
-    0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000, // ',' (44)
-    0b00000, 0b00000, 0b00000, 0b00000, 0b00100, 0b00100, 0b01000, // '-' (45)
-    0b00000, 0b00000, 0b00000, 0b11111, 0b00000, 0b00000, 0b00000, // '.' (46)
-    0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00110, 0b00000, // '/' (47)
-    0b00001, 0b00010, 0b00100, 0b00100, 0b01000, 0b10000, 0b00000, // '0' (48)
-    0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110, // '1' (49)
-    0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110, // '2' (50)
-    0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111, // '3' (51)
-    0b11111, 0b00010, 0b00100, 0b00010, 0b00001, 0b10001, 0b01110, // '4' (52)
-    0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010, // '5' (53)
-    0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110, // '6' (54)
-    0b00110, 0b01000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110, // '7' (55)
-    0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000, // '8' (56)
-    0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110, // '9' (57)
-    0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00010, 0b01100, // ':' (58)
-    0b00000, 0b00100, 0b00000, 0b00000, 0b00000, 0b00100, 0b00000, // ';' (59)
-    0b00000, 0b00100, 0b00000, 0b00000, 0b00100, 0b00100, 0b01000, // '<' (60)
-    0b00010, 0b00100, 0b01000, 0b10000, 0b01000, 0b00100, 0b00010, // '=' (61)
-    0b00000, 0b00000, 0b11111, 0b00000, 0b11111, 0b00000, 0b00000, // '>' (62)
-    0b10000, 0b01000, 0b00100, 0b00010, 0b00100, 0b01000, 0b10000, // '?' (63)
-    0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b00000, 0b00100, // '@' (64)
-    0b01110, 0b10001, 0b10111, 0b10101, 0b10111, 0b10000, 0b01111, // 'A' (65)
-    0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, // 'B' (66)
-    0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110, // 'C' (67)
-    0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110, // 'D' (68)
-    0b11100, 0b10010, 0b10001, 0b10001, 0b10001, 0b10010, 0b11100, // 'E' (69)
-    0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111, // 'F' (70)
-    0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000, // 'G' (71)
-    0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01111, // 'H' (72)
-    0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001, // 'I' (73)
-    0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110, // 'J' (74)
-    0b00111, 0b00010, 0b00010, 0b00010, 0b00010, 0b10010, 0b01100, // 'K' (75)
-    0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001, // 'L' (76)
-    0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111, // 'M' (77)
-    0b10001, 0b11011, 0b10101, 0b10001, 0b10001, 0b10001, 0b10001, // 'N' (78)
-    0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001, // 'O' (79)
-    0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, // 'P' (80)
-    0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000, // 'Q' (81)
-    0b01110, 0b10001, 0b10001, 0b10001, 0b10101, 0b10010, 0b01101, // 'R' (82)
-    0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001, // 'S' (83)
-    0b01111, 0b10000, 0b10000, 0b01110, 0b00001, 0b00001, 0b11110, // 'T' (84)
-    0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, // 'U' (85)
-    0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110, // 'V' (86)
-    0b10001, 0b10001, 0b10001, 0b01010, 0b01010, 0b00100, 0b00100, // 'W' (87)
-    0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001, // 'X' (88)
-    0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b01010, 0b10001, // 'Y' (89)
-    0b10001, 0b10001, 0b01010, 0b00100, 0b00100, 0b00100, 0b00100, // 'Z' (90)
-    0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b10000, 0b11111, // '[' (91)
-    0b01110, 0b01000, 0b01000, 0b01000, 0b01000, 0b01000, 0b01110, // '\\' (92)
-    0b10000, 0b01000, 0b00100, 0b00100, 0b00010, 0b00001, 0b00000, // ']' (93)
-    0b01110, 0b00010, 0b00010, 0b00010, 0b00010, 0b00010, 0b01110, // '^' (94)
-    0b00100, 0b01010, 0b10001, 0b00000, 0b00000, 0b00000, 0b00000, // '_' (95)
-    0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, 0b11111, // '`' (96)
-    0b01000, 0b00100, 0b00000, 0b00000, 0b00000, 0b00000, 0b00000, // 'a' (97)
-    0b00000, 0b00000, 0b01110, 0b00001, 0b01111, 0b10001, 0b01111, // 'b' (98)
-    0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b11110, // 'c' (99)
-    0b00000, 0b00000, 0b01110, 0b10000, 0b10000, 0b10001, 0b01110, // 'd' (100)
-    0b00001, 0b00001, 0b01111, 0b10001, 0b10001, 0b10001, 0b01111, // 'e' (101)
-    0b00000, 0b00000, 0b01110, 0b10001, 0b11111, 0b10000, 0b01110, // 'f' (102)
-    0b00110, 0b01001, 0b01000, 0b11100, 0b01000, 0b01000, 0b01000, // 'g' (103)
-    0b00000, 0b01111, 0b10001, 0b10001, 0b01111, 0b00001, 0b01110, // 'h' (104)
-    0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001, // 'i' (105)
-    0b00100, 0b00000, 0b01100, 0b00100, 0b00100, 0b00100, 0b01110, // 'j' (106)
-    0b00010, 0b00000, 0b00110, 0b00010, 0b00010, 0b10010, 0b01100, // 'k' (107)
-    0b10000, 0b10000, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, // 'l' (108)
-    0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110, // 'm' (109)
-    0b00000, 0b00000, 0b11010, 0b10101, 0b10101, 0b10001, 0b10001, // 'n' (110)
-    0b00000, 0b00000, 0b11110, 0b10001, 0b10001, 0b10001, 0b10001, // 'o' (111)
-    0b00000, 0b00000, 0b01110, 0b10001, 0b10001, 0b10001, 0b01110, // 'p' (112)
-    0b00000, 0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, // 'q' (113)
-    0b00000, 0b01111, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, // 'r' (114)
-    0b00000, 0b00000, 0b10110, 0b11001, 0b10000, 0b10000, 0b10000, // 's' (115)
-    0b00000, 0b00000, 0b01110, 0b10000, 0b01110, 0b00001, 0b11110, // 't' (116)
-    0b01000, 0b01000, 0b11100, 0b01000, 0b01000, 0b01001, 0b00110, // 'u' (117)
-    0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b10011, 0b01101, // 'v' (118)
-    0b00000, 0b00000, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100, // 'w' (119)
-    0b00000, 0b00000, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010, // 'x' (120)
-    0b00000, 0b00000, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001, // 'y' (121)
-    0b00000, 0b10001, 0b10001, 0b01111, 0b00001, 0b10001, 0b01110, // 'z' (122)
-    0b00000, 0b00000, 0b11111, 0b00010, 0b00100, 0b01000, 0b11111, // '{' (123)
-    0b00110, 0b00100, 0b00100, 0b01000, 0b00100, 0b00100, 0b00110, // '|' (124)
-    0b00100, 0b00100, 0b00100, 0b00000, 0b00100, 0b00100, 0b00100, // '}' (125)
-    0b01100, 0b00100, 0b00100, 0b00010, 0b00100, 0b00100, 0b01100, // '~' (126)
-    0b01000, 0b10101, 0b00010, 0b00000, 0b00000, 0b00000, 0b00000,
-];
+// Embedded fonts using include_bytes!
+static UPPER_FONT_DATA: &[u8] = include_bytes!("../assets/fonts/SourceHanSerif-Heavy.otf");
+static LOWER_FONT_DATA: &[u8] = include_bytes!("../assets/fonts/SourceHanSans-Heavy.otf");
 
-pub const CHAR_W: u32 = 5;
-pub const CHAR_H: u32 = 7;
-pub const SCALE: u32 = 4;
-pub const CELL_W: u32 = CHAR_W * SCALE;
-pub const CELL_H: u32 = CHAR_H * SCALE;
+// Config constants
+const MAX_LENGTH: usize = 42;
+const DEFAULT_OFFSET_X: i32 = 200;
 
-// Red-to-yellow gradient (top → bottom): t=0.0 gives pure red, t=1.0 gives red+200g.
-// This matches the classic 5k meme colour scheme.
-fn gradient_color(t: f32) -> (u8, u8, u8) {
-    (255u8, (t * 200.0).clamp(0.0, 255.0) as u8, 0u8)
-}
-
-// Non-ASCII / CJK characters cannot be rendered with the 5×7 bitmap, so they are
-// treated as full-width and occupy 2 cells.  The extra SCALE accounts for letter-spacing.
-pub fn text_pixel_width(text: &str) -> u32 {
-    let mut width = 0u32;
-    for ch in text.chars() {
-        if (ch as u32) < 32 || (ch as u32) > 126 {
-            width += CELL_W * 2 + SCALE;
-        } else {
-            width += CELL_W + SCALE;
-        }
-    }
-    width.saturating_sub(SCALE)
-}
-
-fn draw_glyph(img: &mut RgbaImage, ch: char, x: u32, y: u32, img_h: u32) {
-    let code = ch as u32;
-    if !(32..=126).contains(&code) {
-        return;
-    }
-    let idx = (code - 32) as usize;
-    let base = idx * 7;
-    if base + 7 > FONT_5X7.len() {
-        return;
-    }
-
-    for row in 0..CHAR_H {
-        let bits = FONT_5X7[base + row as usize];
-        for col in 0..CHAR_W {
-            if (bits >> (CHAR_W - 1 - col)) & 1 == 0 {
-                continue;
-            }
-            for dy in 0..SCALE {
-                for dx in 0..SCALE {
-                    let px = x + col * SCALE + dx;
-                    let py = y + row * SCALE + dy;
-                    if px < img.width() && py < img.height() {
-                        let (r, g, b) = gradient_color((py as f32 + 0.5) / img_h as f32);
-                        img.put_pixel(px, py, Rgba([r, g, b, 255]));
-                    }
-                }
-            }
-        }
-    }
-}
-
-// CJK characters are rendered as a filled gradient rectangle with a 1-pixel white border,
-// giving a rough visual representation of a full-width character.
-fn draw_fullwidth_block(img: &mut RgbaImage, x: u32, y: u32, img_h: u32) {
-    let block_w = CELL_W * 2;
-    let block_h = CELL_H;
-
-    for dy in 0..block_h {
-        for dx in 0..block_w {
-            if dx == 0 || dy == 0 || dx == block_w - 1 || dy == block_h - 1 {
-                continue;
-            }
-            let px = x + dx;
-            let py = y + dy;
-            if px < img.width() && py < img.height() {
-                let (r, g, b) = gradient_color((py as f32 + 0.5) / img_h as f32);
-                img.put_pixel(px, py, Rgba([r, g, b, 255]));
-            }
-        }
-    }
-}
-
-fn draw_text_line(img: &mut RgbaImage, text: &str, y: u32) {
-    let text_w = text_pixel_width(text);
-    let img_w = img.width();
-    let img_h = img.height();
-    let start_x = if img_w > text_w {
-        (img_w - text_w) / 2
-    } else {
-        4
-    };
-    let mut cursor_x = start_x;
-
-    for ch in text.chars() {
-        let code = ch as u32;
-        if !(32..=126).contains(&code) {
-            draw_fullwidth_block(img, cursor_x, y, img_h);
-            cursor_x += CELL_W * 2 + SCALE;
-        } else {
-            draw_glyph(img, ch, cursor_x, y, img_h);
-            cursor_x += CELL_W + SCALE;
-        }
-    }
-}
-
-pub fn generate_5k_image(upper: &str, lower: &str) -> Vec<u8> {
-    let padding_h: u32 = 40;
-    let line_gap: u32 = 20;
-    let padding_bottom: u32 = 40;
-    let padding_lr: u32 = 80;
-
-    let content_w = text_pixel_width(upper).max(text_pixel_width(lower));
-    let width = (content_w + padding_lr).max(300);
-    let height = (padding_h + CELL_H + line_gap + CELL_H + padding_bottom).max(200);
-
-    let mut img = RgbaImage::new(width, height);
-    for pixel in img.pixels_mut() {
-        *pixel = Rgba([255, 255, 255, 255]);
-    }
-
-    draw_text_line(&mut img, upper, padding_h);
-    draw_text_line(&mut img, lower, padding_h + CELL_H + line_gap);
-
-    let mut png_bytes: Vec<u8> = Vec::new();
-    {
-        use image::ImageEncoder;
-        image::codecs::png::PngEncoder::new(&mut png_bytes)
-            .write_image(
-                img.as_raw(),
-                img.width(),
-                img.height(),
-                image::ExtendedColorType::Rgba8,
-            )
-            .expect("PNG encoding failed");
-    }
-    png_bytes
-}
-
-// Parses the argument string after the command prefix.
-// Quoted form:  `"上文字" "下文字"`  — extracts content between double-quote pairs.
+// Trim quotes from both ends
 fn trim_both_ends(s: &str) -> String {
-    let s = s.trim();
-    let mut result = s.to_string();
+    let mut result = s.trim().to_string();
     while (result.starts_with('"') && result.ends_with('"'))
         || (result.starts_with('\'') && result.ends_with('\''))
     {
@@ -264,41 +33,262 @@ fn trim_both_ends(s: &str) -> String {
     result
 }
 
-pub fn parse_args(args: &str) -> (String, String) {
+// Parse command arguments
+fn parse_args(args: &str) -> (String, String) {
     let s = args.trim();
+    if s.is_empty() {
+        return (String::new(), String::new());
+    }
 
+    // Handle quoted first argument
     if s.starts_with('"') || s.starts_with('\'') {
         let quote = if s.starts_with('"') { '"' } else { '\'' };
 
-        let mut close_pos: usize = 0;
-        let mut found = false;
-
-        for (i, c) in s[1..].char_indices() {
-            if c == quote {
-                close_pos = i;
-                found = true;
-                break;
+        if let Some(close_pos) = s[1..].find(quote) {
+            let upper = trim_both_ends(&s[1..close_pos + 1]);
+            let lower = trim_both_ends(&s[close_pos + 2..]);
+            if !upper.is_empty() || !lower.is_empty() {
+                return (upper, lower);
             }
         }
-
-        if !found {
-            return (String::new(), String::new());
-        }
-
-        while !s.is_char_boundary(close_pos + 1) {
-            close_pos += 1;
-        }
-        let upper = trim_both_ends(&s[1..close_pos + 1]);
-        let lower = trim_both_ends(s[close_pos + 2..].trim());
-        if !upper.is_empty() || !lower.is_empty() {
-            return (upper, lower);
-        }
+        return (String::new(), String::new());
     }
 
+    // Handle space-separated arguments
     let mut iter = s.splitn(2, char::is_whitespace);
     let upper = iter.next().unwrap_or("").trim().to_string();
     let lower = iter.next().unwrap_or("").trim().to_string();
     (upper, lower)
+}
+
+// Linear interpolation
+fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+// Interpolate between two RGB colors
+fn lerp_color(c1: (u8, u8, u8), c2: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    (
+        lerp(c1.0 as f32, c2.0 as f32, t) as u8,
+        lerp(c1.1 as f32, c2.1 as f32, t) as u8,
+        lerp(c1.2 as f32, c2.2 as f32, t) as u8,
+    )
+}
+
+// Create gradient colors for upper text stroke
+fn upper_stroke_gradient(t: f32) -> (u8, u8, u8) {
+    let stops: Vec<(f32, (u8, u8, u8))> = vec![
+        (0.0, (253, 241, 0)),
+        (0.25, (245, 253, 187)),
+        (0.4, (255, 255, 255)),
+        (0.75, (253, 219, 9)),
+        (0.9, (127, 53, 0)),
+        (1.0, (243, 196, 11)),
+    ];
+    interpolate_gradient(&stops, t)
+}
+
+// Create gradient colors for lower text stroke
+fn lower_stroke_gradient(t: f32) -> (u8, u8, u8) {
+    let stops: Vec<(f32, (u8, u8, u8))> = vec![
+        (0.0, (245, 246, 248)),
+        (0.15, (255, 255, 255)),
+        (0.35, (195, 213, 220)),
+        (0.5, (160, 190, 201)),
+        (0.51, (160, 190, 201)),
+        (0.52, (196, 215, 222)),
+        (1.0, (255, 255, 255)),
+    ];
+    interpolate_gradient(&stops, t)
+}
+
+// Interpolate gradient from stops
+fn interpolate_gradient(stops: &[(f32, (u8, u8, u8))], t: f32) -> (u8, u8, u8) {
+    if t <= stops[0].0 {
+        return stops[0].1;
+    }
+    if t >= stops[stops.len() - 1].0 {
+        return stops[stops.len() - 1].1;
+    }
+
+    for i in 0..stops.len() - 1 {
+        if t >= stops[i].0 && t <= stops[i + 1].0 {
+            let local_t = (t - stops[i].0) / (stops[i + 1].0 - stops[i].0);
+            return lerp_color(stops[i].1, stops[i + 1].1, local_t);
+        }
+    }
+    stops[stops.len() - 1].1
+}
+
+fn load_embedded_font(data: &'static [u8]) -> Option<FontRef<'static>> {
+    FontRef::try_from_slice(data).ok()
+}
+
+// Generate the 5k style image
+pub fn generate_5k_image(upper: &str, lower: &str) -> Vec<u8> {
+    let font_upper = match load_embedded_font(UPPER_FONT_DATA) {
+        Some(f) => f,
+        None => {
+            eprintln!("Failed to load upper font");
+            return vec![];
+        }
+    };
+
+    let font_lower = match load_embedded_font(LOWER_FONT_DATA) {
+        Some(f) => f,
+        None => {
+            eprintln!("Failed to load lower font");
+            return vec![];
+        }
+    };
+
+    let scale = PxScale::from(24.0);
+
+    // Measure text widths using rough approximation
+    let char_width_estimate = 24.0 * 0.6;
+    let upper_width = upper.len() as f32 * char_width_estimate;
+    let lower_width = lower.len() as f32 * char_width_estimate;
+
+    let offset_x = DEFAULT_OFFSET_X;
+
+    let canvas_width =
+        ((upper_width as i32 + 80).max(lower_width as i32 + offset_x + 90)).max(300) as u32;
+    let canvas_height = 270u32;
+    let mut img = RgbaImage::new(canvas_width, canvas_height);
+    for pixel in img.pixels_mut() {
+        *pixel = Rgba([255, 255, 255, 255]);
+    }
+
+    // Draw upper text
+    draw_upper_text(&mut img, upper, &font_upper, scale);
+
+    // Draw lower text
+    draw_lower_text(&mut img, lower, &font_lower, scale, offset_x);
+
+    // Encode to PNG
+    let mut png_bytes: Vec<u8> = Vec::new();
+    {
+        use image::ImageEncoder;
+        image::codecs::png::PngEncoder::new(&mut png_bytes)
+            .write_image(
+                img.as_raw(),
+                img.width(),
+                img.height(),
+                image::ExtendedColorType::Rgba8,
+            )
+            .expect("PNG encoding failed");
+    }
+
+    png_bytes
+}
+
+fn draw_upper_text(img: &mut RgbaImage, text: &str, font: &FontRef, scale: PxScale) {
+    let pos_x = 17i32;
+    let pos_y = 24i32;
+
+    // Layer 1: Thick black stroke
+    for dy in [-12, -6, 0, 6, 12] {
+        for dx in [-12, -6, 0, 6, 12] {
+            draw_text_at(
+                img,
+                text,
+                font,
+                scale,
+                pos_x + dx + 2,
+                pos_y + dy + 2,
+                (0, 0, 0),
+            );
+        }
+    }
+
+    // Layer 2: Gradient stroke
+    for dy in [-4, -2, 0, 2, 4] {
+        for dx in [-4, -2, 0, 2, 4] {
+            let t = (dy + 4) as f32 / 8.0;
+            let color = upper_stroke_gradient(t.clamp(0.0, 1.0));
+            draw_text_at(img, text, font, scale, pos_x + dx, pos_y + dy, color);
+        }
+    }
+
+    // Layer 3: Fill
+    draw_text_at(img, text, font, scale, pos_x, pos_y - 2, (255, 200, 0));
+}
+
+fn draw_lower_text(img: &mut RgbaImage, text: &str, font: &FontRef, scale: PxScale, offset_x: i32) {
+    let _offset_y = 130i32;
+    let pos_x = offset_x + 33;
+    let pos_y = 131;
+
+    // Layer 1: Black stroke
+    for dy in [-10, -5, 0, 5, 10] {
+        for dx in [-10, -5, 0, 5, 10] {
+            draw_text_at(
+                img,
+                text,
+                font,
+                scale,
+                pos_x + dx + 2,
+                pos_y + dy + 2,
+                (0, 0, 0),
+            );
+        }
+    }
+
+    // Layer 2: Gradient stroke
+    for dy in [-3, -1, 0, 1, 3] {
+        for dx in [-3, -1, 0, 1, 3] {
+            let t = (dy + 3) as f32 / 6.0;
+            let color = lower_stroke_gradient(t.clamp(0.0, 1.0));
+            draw_text_at(img, text, font, scale, pos_x + dx, pos_y + dy, color);
+        }
+    }
+
+    // Layer 3: Fill
+    draw_text_at(img, text, font, scale, pos_x, pos_y - 3, (200, 210, 220));
+}
+
+fn draw_text_at(
+    img: &mut RgbaImage,
+    text: &str,
+    font: &FontRef,
+    scale: PxScale,
+    x: i32,
+    y: i32,
+    color: (u8, u8, u8),
+) {
+    use ab_glyph::{Font, ScaleFont};
+
+    let scaled_font = font.as_scaled(scale);
+    let mut x_pos = x as f32;
+    let y_pos = y as f32;
+
+    for c in text.chars() {
+        let glyph = scaled_font.scaled_glyph(c);
+        let mut positioned_glyph = glyph;
+        positioned_glyph.position = ab_glyph::point(x_pos, y_pos);
+        x_pos += scaled_font.h_advance(positioned_glyph.id);
+
+        if let Some(outlined) = font.outline_glyph(positioned_glyph) {
+            let bounds = outlined.px_bounds();
+            eprintln!("  Glyph '{}' bounds: {:?}", c, bounds);
+            let img_w = img.width();
+            let img_h = img.height();
+
+            outlined.draw(|px, py, coverage| {
+                let px = bounds.min.x as i32 + px as i32;
+                let py = bounds.min.y as i32 + py as i32;
+
+                if px >= 0 && py >= 0 && (px as u32) < img_w && (py as u32) < img_h {
+                    let alpha = (coverage * 255.0) as u8;
+                    if alpha > 1 {
+                        let px = px as u32;
+                        let py = py as u32;
+                        img.put_pixel(px, py, Rgba([color.0, color.1, color.2, alpha]));
+                    }
+                }
+            });
+        }
+    }
 }
 
 #[async_trait]
@@ -335,7 +325,18 @@ impl Feature for Draw5kFeature {
             return None;
         }
 
+        // Validate length
+        if upper.len() > MAX_LENGTH || lower.len() > MAX_LENGTH {
+            log::warn!("Text too long for 5k image");
+            return None;
+        }
+
         let png_bytes = generate_5k_image(&upper, &lower);
+        if png_bytes.is_empty() {
+            log::warn!("Failed to generate 5k image");
+            return None;
+        }
+
         let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
         Some(Segment::image(format!("base64://{}", b64)))
     }

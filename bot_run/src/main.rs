@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .iter()
         .map(|f| f.feature_name().to_string())
         .collect();
-    log::info!("Loaded features: {:?}", feature_names);
+    log::info!("Loaded features:\n{:?}", feature_names.join("\n"));
 
     let ws_features = ws_arc.clone();
     let features_for_task = features.clone();

@@ -313,9 +313,36 @@ impl Feature for DupCheckFeature {
 
             if let Ok(vec) = res {
                 if let Some(redis::Value::Int(count)) = vec.first() {
-                    if *count > 0 {
-                        log::debug!("Image matches emoji key, skipping");
-                        return None;
+                    if *count > 0 && vec.len() >= 3 {
+                        if let redis::Value::Array(ref fields) = vec[2] {
+                            let mut found_hash_hex = String::new();
+
+                            for i in (0..fields.len()).step_by(2) {
+                                let key_str = match &fields[i] {
+                                    redis::Value::BulkString(k) => {
+                                        String::from_utf8_lossy(k).into_owned()
+                                    }
+                                    redis::Value::SimpleString(k) => k.to_string(),
+                                    _ => continue,
+                                };
+                                let val_str = match &fields[i + 1] {
+                                    redis::Value::BulkString(v) => {
+                                        String::from_utf8_lossy(v).into_owned()
+                                    }
+                                    redis::Value::SimpleString(v) => v.to_string(),
+                                    _ => continue,
+                                };
+                                if key_str == "hash_hex" {
+                                    found_hash_hex = val_str;
+                                    break;
+                                }
+                            }
+
+                            if found_hash_hex == hash_hex {
+                                log::debug!("Image exactly matches emoji hash, skipping");
+                                return None;
+                            }
+                        }
                     }
                 }
             }
@@ -347,6 +374,7 @@ impl Feature for DupCheckFeature {
                             let mut record_ts: u64 = 0;
                             let mut hit_count: u64 = 1;
                             let mut hit_key = String::new();
+                            let mut record_hash_hex = String::new();
 
                             if let redis::Value::BulkString(ref k) = vec[1] {
                                 hit_key = String::from_utf8_lossy(k).into_owned();
@@ -374,8 +402,17 @@ impl Feature for DupCheckFeature {
                                     "user_id" => record_id = val_str.parse().unwrap_or(0),
                                     "timestamp" => record_ts = val_str.parse().unwrap_or(0),
                                     "count" => hit_count = val_str.parse().unwrap_or(1),
+                                    "hash_hex" => record_hash_hex = val_str,
                                     _ => {}
                                 }
+                            }
+
+                            if record_hash_hex != hash_hex {
+                                log::debug!(
+                                    "Vector match found but hash mismatch (stored: {}, current: {}), skipping",
+                                    record_hash_hex, hash_hex
+                                );
+                                return None;
                             }
 
                             if hit_count < 10 {

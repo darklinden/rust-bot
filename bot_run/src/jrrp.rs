@@ -20,7 +20,7 @@ impl JrrpFeature {
         let hash_result = hasher.finalize();
 
         let hash_hex = format!("{:x}", hash_result);
-        let big = BigUint::parse_bytes(&hash_hex.as_bytes(), 16).unwrap();
+        let big = BigUint::parse_bytes(hash_hex.as_bytes(), 16).unwrap();
         let float_val = big.to_f64().unwrap(); // This will be imprecise for large values
         let luck_value = (float_val % 101.0) as u32;
 
