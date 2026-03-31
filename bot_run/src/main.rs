@@ -57,7 +57,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await;
 
     let (tx, mut sd_rx) = mpsc::channel::<SdImageResult>(32);
+    let (cron_tx, mut cron_rx) = mpsc::channel::<bot_run::cron::CronResult>(32);
     let ws_sd = ws_arc.clone();
+    let ws_cron = ws_arc.clone();
 
     let features_enabled: Vec<String> = env::var("FEATURES_ENABLED")
         .unwrap_or_default()
@@ -106,6 +108,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bot_run::sdimage::SdImageFeature::feature_name(),
             move || {
                 Arc::new(bot_run::sdimage::SdImageFeature::new(tx.clone()))
+                    as Arc<dyn Feature + Send + Sync>
+            },
+        );
+        manager.register(
+            bot_run::cron::CronFeature::feature_id(),
+            bot_run::cron::CronFeature::feature_name(),
+            move || {
+                Arc::new(bot_run::cron::CronFeature::new(cron_tx.clone()))
                     as Arc<dyn Feature + Send + Sync>
             },
         );
@@ -191,6 +201,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             let segments = vec![Segment::text(msg), result.segment];
             let _ = send_reply(&ws_sd_cb, &result.context, segments).await;
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(result) = cron_rx.recv().await {
+            let segments = vec![
+                Segment::at(result.context.user_id),
+                Segment::text(format!(" 提醒你：{}", result.message)),
+            ];
+            let _ = send_reply(&ws_cron, &result.context, segments).await;
         }
     });
 
