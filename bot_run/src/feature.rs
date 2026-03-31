@@ -157,7 +157,7 @@ impl Feature for FeatureConfig {
             } else {
                 let loaded: Vec<_> = all.iter().filter(|f| f.loaded).collect();
                 let available: Vec<_> = all.iter().filter(|f| !f.loaded).collect();
-                let mut lines = Vec::new();
+                let mut lines = vec!["".to_string()];
                 if !loaded.is_empty() {
                     lines.push("=== 已加载的功能 ===".to_string());
                     for f in &loaded {
