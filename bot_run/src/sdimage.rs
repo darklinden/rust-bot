@@ -348,12 +348,23 @@ impl SdImageFeature {
     pub fn new(sender: SdImageSender) -> Self {
         Self { sender }
     }
+
+    pub fn feature_id() -> &'static str {
+        "sd_image"
+    }
+
+    pub fn feature_name() -> &'static str {
+        "sd 图片生成: sd <prompt> 或 -sd <prompt> 生成图片"
+    }
 }
 
 #[async_trait]
 impl Feature for SdImageFeature {
+    fn feature_id(&self) -> &str {
+        SdImageFeature::feature_id()
+    }
     fn feature_name(&self) -> &str {
-        "sd 图片生成: sd <prompt> 或 -sd <prompt> 生成图片"
+        SdImageFeature::feature_name()
     }
 
     fn check_command(&self, msg: &Value) -> bool {

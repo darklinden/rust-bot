@@ -5,10 +5,24 @@ use serde_json::Value;
 
 pub struct ChoiceFeature;
 
+impl ChoiceFeature {
+    pub fn feature_id() -> &'static str {
+        "choice"
+    }
+
+    pub fn feature_name() -> &'static str {
+        "帮我选: 帮我选 + 选项1 + 选项2 + ... 来帮你做选择"
+    }
+}
+
 #[async_trait]
 impl Feature for ChoiceFeature {
+    fn feature_id(&self) -> &str {
+        ChoiceFeature::feature_id()
+    }
+
     fn feature_name(&self) -> &str {
-        "帮我选: 帮我选 + 选项1 + 选项2 + ... 来帮你做选择"
+        ChoiceFeature::feature_name()
     }
 
     fn check_command(&self, msg: &Value) -> bool {

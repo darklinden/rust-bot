@@ -696,10 +696,32 @@ pub fn build_response(data: &ICachedPriceData, usd_cny_rate: Option<f64>) -> Str
 
 pub struct GoldFeature;
 
+impl Default for GoldFeature {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl GoldFeature {
+    pub fn new() -> Self {
+        GoldFeature
+    }
+
+    pub fn feature_id() -> &'static str {
+        "gold"
+    }
+    pub fn feature_name() -> &'static str {
+        "今日金价: -gold 或 gold 查看今日金价"
+    }
+}
+
 #[async_trait]
 impl Feature for GoldFeature {
+    fn feature_id(&self) -> &str {
+        GoldFeature::feature_id()
+    }
     fn feature_name(&self) -> &str {
-        "今日金价: -gold 或 gold 查看今日金价"
+        GoldFeature::feature_name()
     }
 
     fn check_command(&self, msg: &Value) -> bool {

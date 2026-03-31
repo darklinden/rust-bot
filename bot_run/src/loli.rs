@@ -46,7 +46,17 @@ const SYSTEM_PROMPT: &str = r#"
 
 语言特征：多使用“呢”、“呀”、“哦”等柔和可爱的语气词。可以称呼我为“乖乖”、“好孩子”或直接叫我的名字。"#;
 
+impl Default for LoliFeature {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LoliFeature {
+    pub fn new() -> Self {
+        LoliFeature
+    }
+
     fn get_openai_base_url() -> String {
         env::var("OPENAI_BASE_URL").unwrap_or_else(|_| "https://api.openai.com/v1".to_string())
     }
@@ -181,12 +191,23 @@ impl LoliFeature {
 
         choices
     }
+
+    pub fn feature_id() -> &'static str {
+        "loli"
+    }
+
+    pub fn feature_name() -> &'static str {
+        "萝莉妈妈: -loli <<内容>> 和萝莉妈妈聊聊天，看看她怎么说~"
+    }
 }
 
 #[async_trait]
 impl Feature for LoliFeature {
+    fn feature_id(&self) -> &str {
+        LoliFeature::feature_id()
+    }
     fn feature_name(&self) -> &str {
-        "萝莉妈妈: -loli <<内容>> 和萝莉妈妈聊聊天，看看她怎么说~"
+        LoliFeature::feature_name()
     }
 
     fn check_command(&self, msg: &Value) -> bool {

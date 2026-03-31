@@ -9,7 +9,17 @@ use sha2::{Digest, Sha256};
 
 pub struct JrrpFeature;
 
+impl Default for JrrpFeature {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl JrrpFeature {
+    pub fn new() -> Self {
+        JrrpFeature
+    }
+
     pub fn get_luck_value(&self, user_id: i64) -> i32 {
         let day_timestamp = (Utc::now().timestamp() + (8 * 3600)) / 86400; // 以北京时间为基准
 
@@ -56,12 +66,24 @@ impl JrrpFeature {
             }
         }
     }
+
+    pub fn feature_id() -> &'static str {
+        "jrrp"
+    }
+
+    pub fn feature_name() -> &'static str {
+        "今日人品: -jrrp 或 jrrp 查看今日人品"
+    }
 }
 
 #[async_trait]
 impl Feature for JrrpFeature {
+    fn feature_id(&self) -> &str {
+        JrrpFeature::feature_id()
+    }
+
     fn feature_name(&self) -> &str {
-        "今日人品: -jrrp 或 jrrp 查看今日人品"
+        JrrpFeature::feature_name()
     }
 
     fn check_command(&self, msg: &Value) -> bool {

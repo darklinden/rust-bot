@@ -1,24 +1,10 @@
 use bot_lib::{logger, NapcatWebSocket, Segment};
-use bot_run::feature::{Feature, MessageContext};
-use bot_run::sdimage::{SdImageFeature, SdImageResult};
+use bot_run::feature::{Feature, FeatureConfig, MessageContext, FEATURE_MANAGER};
+use bot_run::sdimage::SdImageResult;
 use dotenvy::dotenv;
-use serde_json::Value;
 use std::env;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-
-#[allow(dead_code)]
-fn check_text_command(msg: &Value, prefixes: &[&str]) -> bool {
-    if msg.get("type").and_then(|v| v.as_str()) != Some("text") {
-        return false;
-    }
-    let text = msg
-        .get("data")
-        .and_then(|d| d.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or("");
-    prefixes.iter().any(|p| text.starts_with(p))
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -73,8 +59,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut sd_rx) = mpsc::channel::<SdImageResult>(32);
     let ws_sd = ws_arc.clone();
 
-    let mut features: Vec<Arc<dyn Feature + Send + Sync>> = vec![];
-
     let features_enabled: Vec<String> = env::var("FEATURES_ENABLED")
         .unwrap_or_default()
         .split(',')
@@ -82,36 +66,69 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filter(|s| !s.is_empty())
         .collect();
 
-    for feat in &features_enabled {
-        match feat.trim() {
-            "choice" => features
-                .push(Arc::new(bot_run::choice::ChoiceFeature) as Arc<dyn Feature + Send + Sync>),
-            "draw5k" => features
-                .push(Arc::new(bot_run::draw5k::Draw5kFeature) as Arc<dyn Feature + Send + Sync>),
-            "dup_check" => features.push(Arc::new(bot_run::dup_check::DupCheckFeature::new())
-                as Arc<dyn Feature + Send + Sync>),
-            "gold" => features
-                .push(Arc::new(bot_run::gold::GoldFeature) as Arc<dyn Feature + Send + Sync>),
-            "jrrp" => features
-                .push(Arc::new(bot_run::jrrp::JrrpFeature) as Arc<dyn Feature + Send + Sync>),
-            "loli" => features
-                .push(Arc::new(bot_run::loli::LoliFeature) as Arc<dyn Feature + Send + Sync>),
-            "sdimage" => features
-                .push(Arc::new(SdImageFeature::new(tx.clone())) as Arc<dyn Feature + Send + Sync>),
-            _ => log::warn!("Unknown feature '{}' in FEATURES_ENABLED", feat),
+    {
+        let mut manager = FEATURE_MANAGER.lock().unwrap();
+        manager.register(
+            bot_run::choice::ChoiceFeature::feature_id(),
+            bot_run::choice::ChoiceFeature::feature_name(),
+            || Arc::new(bot_run::choice::ChoiceFeature) as Arc<dyn Feature + Send + Sync>,
+        );
+        manager.register(
+            bot_run::draw5k::Draw5kFeature::feature_id(),
+            bot_run::draw5k::Draw5kFeature::feature_name(),
+            || Arc::new(bot_run::draw5k::Draw5kFeature) as Arc<dyn Feature + Send + Sync>,
+        );
+        manager.register(
+            bot_run::dup_check::DupCheckFeature::feature_id(),
+            bot_run::dup_check::DupCheckFeature::feature_name(),
+            || {
+                Arc::new(bot_run::dup_check::DupCheckFeature::new())
+                    as Arc<dyn Feature + Send + Sync>
+            },
+        );
+        manager.register(
+            bot_run::gold::GoldFeature::feature_id(),
+            bot_run::gold::GoldFeature::feature_name(),
+            || Arc::new(bot_run::gold::GoldFeature::new()) as Arc<dyn Feature + Send + Sync>,
+        );
+        manager.register(
+            bot_run::jrrp::JrrpFeature::feature_id(),
+            bot_run::jrrp::JrrpFeature::feature_name(),
+            || Arc::new(bot_run::jrrp::JrrpFeature::new()) as Arc<dyn Feature + Send + Sync>,
+        );
+        manager.register(
+            bot_run::loli::LoliFeature::feature_id(),
+            bot_run::loli::LoliFeature::feature_name(),
+            || Arc::new(bot_run::loli::LoliFeature::new()) as Arc<dyn Feature + Send + Sync>,
+        );
+        manager.register(
+            bot_run::sdimage::SdImageFeature::feature_id(),
+            bot_run::sdimage::SdImageFeature::feature_name(),
+            move || {
+                Arc::new(bot_run::sdimage::SdImageFeature::new(tx.clone()))
+                    as Arc<dyn Feature + Send + Sync>
+            },
+        );
+
+        for feat in &features_enabled {
+            if let Err(e) = manager.load_feature(feat.trim()) {
+                log::warn!("Failed to load feature '{}': {}", feat, e);
+            }
         }
+
+        manager
+            .loaded
+            .push(Arc::new(FeatureConfig) as Arc<dyn Feature + Send + Sync>);
     }
 
-    let features: Arc<Vec<Arc<dyn Feature + Send + Sync>>> = Arc::new(features);
-
-    let feature_names: Vec<String> = features
-        .iter()
-        .map(|f| f.feature_name().to_string())
-        .collect();
+    let feature_names: Vec<String> = {
+        let manager = FEATURE_MANAGER.lock().unwrap();
+        manager.list_loaded()
+    };
     log::info!("Loaded features:\n{:?}", feature_names.join("\n"));
 
     let ws_features = ws_arc.clone();
-    let features_for_task = features.clone();
+    let fm = FEATURE_MANAGER.clone();
     tokio::spawn(async move {
         let mut rx = ws_features.event_receiver();
         while let Ok(json) = rx.recv().await {
@@ -136,9 +153,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or_default();
 
             for msg in messages {
-                let mut handled = false;
+                let current_features = {
+                    let manager = fm.lock().unwrap();
+                    manager.loaded.clone()
+                };
 
-                for feature in features_for_task.iter() {
+                for feature in &current_features {
                     if feature.check_command(&msg) {
                         let ctx = context.clone();
                         let msg_clone = msg.clone();
@@ -152,23 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         });
 
-                        handled = true;
                         break;
-                    }
-                }
-
-                if !handled {
-                    if let Some(text) = msg
-                        .get("data")
-                        .and_then(|d| d.get("text"))
-                        .and_then(|t| t.as_str())
-                    {
-                        if text.trim() == "echo features" {
-                            let list = feature_names.join(", ");
-                            let reply = format!("当前已加载的功能有：\n{}", list);
-                            let _ = send_reply(&ws_features, &context, vec![Segment::text(reply)])
-                                .await;
-                        }
                     }
                 }
             }

@@ -143,10 +143,24 @@ pub async fn ensure_vector_indexes() -> bool {
     true
 }
 
+impl DupCheckFeature {
+    pub fn feature_id() -> &'static str {
+        "dup_check"
+    }
+
+    pub fn feature_name() -> &'static str {
+        "火星图出警: -emoji 标记上个出警为表情包"
+    }
+}
+
 #[async_trait]
 impl Feature for DupCheckFeature {
+    fn feature_id(&self) -> &str {
+        DupCheckFeature::feature_id()
+    }
+
     fn feature_name(&self) -> &str {
-        "火星图出警: -emoji 标记上个出警为表情包"
+        DupCheckFeature::feature_name()
     }
 
     fn check_command(&self, msg: &Value) -> bool {

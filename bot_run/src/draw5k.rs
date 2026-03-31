@@ -291,10 +291,24 @@ fn draw_text_at(
     }
 }
 
+impl Draw5kFeature {
+    pub fn feature_id() -> &'static str {
+        "draw5k"
+    }
+
+    pub fn feature_name() -> &'static str {
+        "5k 图片生成: 5k <上行文字> <下行文字>..."
+    }
+}
+
 #[async_trait]
 impl Feature for Draw5kFeature {
+    fn feature_id(&self) -> &str {
+        Draw5kFeature::feature_id()
+    }
+
     fn feature_name(&self) -> &str {
-        "5k 图片生成: 5k <上行文字> <下行文字>..."
+        Draw5kFeature::feature_name()
     }
 
     fn check_command(&self, msg: &Value) -> bool {
