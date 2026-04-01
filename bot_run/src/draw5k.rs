@@ -1,22 +1,20 @@
 use crate::feature::{Feature, MessageContext};
-use ab_glyph::{FontRef, PxScale};
 use async_trait::async_trait;
 use base64::Engine;
 use bot_lib::structs::{MessageSegment, Segment};
-use image::{Rgba, RgbaImage};
 use serde_json::Value;
 
 pub struct Draw5kFeature;
 
-// Embedded fonts using include_bytes!
 static UPPER_FONT_DATA: &[u8] = include_bytes!("../assets/fonts/SourceHanSerif-Heavy.otf");
 static LOWER_FONT_DATA: &[u8] = include_bytes!("../assets/fonts/SourceHanSans-Heavy.otf");
 
-// Config constants
+const UPPER_FONT_FAMILY: &str = "Source Han Serif CN";
+const LOWER_FONT_FAMILY: &str = "Source Han Sans CN";
+
 const MAX_LENGTH: usize = 42;
 const DEFAULT_OFFSET_X: i32 = 200;
 
-// Trim quotes from both ends
 fn trim_both_ends(s: &str) -> String {
     let mut result = s.trim().to_string();
     while (result.starts_with('"') && result.ends_with('"'))
@@ -33,14 +31,12 @@ fn trim_both_ends(s: &str) -> String {
     result
 }
 
-// Parse command arguments
 fn parse_args(args: &str) -> (String, String) {
     let s = args.trim();
     if s.is_empty() {
         return (String::new(), String::new());
     }
 
-    // Handle quoted first argument
     if s.starts_with('"') || s.starts_with('\'') {
         let quote = if s.starts_with('"') { '"' } else { '\'' };
 
@@ -54,239 +50,313 @@ fn parse_args(args: &str) -> (String, String) {
         return (String::new(), String::new());
     }
 
-    // Handle space-separated arguments
     let mut iter = s.splitn(2, char::is_whitespace);
     let upper = iter.next().unwrap_or("").trim().to_string();
     let lower = iter.next().unwrap_or("").trim().to_string();
     (upper, lower)
 }
 
-// Linear interpolation
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
-}
-
-// Interpolate between two RGB colors
-fn lerp_color(c1: (u8, u8, u8), c2: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
-    (
-        lerp(c1.0 as f32, c2.0 as f32, t) as u8,
-        lerp(c1.1 as f32, c2.1 as f32, t) as u8,
-        lerp(c1.2 as f32, c2.2 as f32, t) as u8,
-    )
-}
-
-// Create gradient colors for upper text stroke
-fn upper_stroke_gradient(t: f32) -> (u8, u8, u8) {
-    let stops: Vec<(f32, (u8, u8, u8))> = vec![
-        (0.0, (253, 241, 0)),
-        (0.25, (245, 253, 187)),
-        (0.4, (255, 255, 255)),
-        (0.75, (253, 219, 9)),
-        (0.9, (127, 53, 0)),
-        (1.0, (243, 196, 11)),
-    ];
-    interpolate_gradient(&stops, t)
-}
-
-// Create gradient colors for lower text stroke
-fn lower_stroke_gradient(t: f32) -> (u8, u8, u8) {
-    let stops: Vec<(f32, (u8, u8, u8))> = vec![
-        (0.0, (245, 246, 248)),
-        (0.15, (255, 255, 255)),
-        (0.35, (195, 213, 220)),
-        (0.5, (160, 190, 201)),
-        (0.51, (160, 190, 201)),
-        (0.52, (196, 215, 222)),
-        (1.0, (255, 255, 255)),
-    ];
-    interpolate_gradient(&stops, t)
-}
-
-// Interpolate gradient from stops
-fn interpolate_gradient(stops: &[(f32, (u8, u8, u8))], t: f32) -> (u8, u8, u8) {
-    if t <= stops[0].0 {
-        return stops[0].1;
-    }
-    if t >= stops[stops.len() - 1].0 {
-        return stops[stops.len() - 1].1;
-    }
-
-    for i in 0..stops.len() - 1 {
-        if t >= stops[i].0 && t <= stops[i + 1].0 {
-            let local_t = (t - stops[i].0) / (stops[i + 1].0 - stops[i].0);
-            return lerp_color(stops[i].1, stops[i + 1].1, local_t);
+fn xml_escape(s: &str) -> String {
+    let mut result = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => result.push_str("&amp;"),
+            '<' => result.push_str("&lt;"),
+            '>' => result.push_str("&gt;"),
+            '"' => result.push_str("&quot;"),
+            '\'' => result.push_str("&apos;"),
+            other => result.push(other),
         }
     }
-    stops[stops.len() - 1].1
+    result
 }
 
-fn load_embedded_font(data: &'static [u8]) -> Option<FontRef<'static>> {
-    FontRef::try_from_slice(data).ok()
+fn estimate_text_width(text: &str) -> f64 {
+    text.chars()
+        .map(|c| if c as u32 > 0x2E7F { 100.0 } else { 60.0 })
+        .sum()
 }
 
-// Generate the 5k style image
-pub fn generate_5k_image(upper: &str, lower: &str) -> Vec<u8> {
-    let font_upper = match load_embedded_font(UPPER_FONT_DATA) {
-        Some(f) => f,
-        None => {
-            eprintln!("Failed to load upper font");
-            return vec![];
-        }
-    };
+fn linear_gradient(id: &str, x1: f64, y1: f64, x2: f64, y2: f64, stops: &[(f64, &str)]) -> String {
+    let mut s = format!(
+        r#"<linearGradient id="{}" x1="{}" y1="{}" x2="{}" y2="{}" gradientUnits="userSpaceOnUse">"#,
+        id, x1, y1, x2, y2
+    );
+    for (offset, color) in stops {
+        s.push_str(&format!(r#"<stop offset="{}" stop-color="{}"/>"#, offset, color));
+    }
+    s.push_str("</linearGradient>");
+    s
+}
 
-    let font_lower = match load_embedded_font(LOWER_FONT_DATA) {
-        Some(f) => f,
-        None => {
-            eprintln!("Failed to load lower font");
-            return vec![];
-        }
-    };
+fn build_svg(upper: &str, lower: &str) -> String {
+    let upper_width = estimate_text_width(upper);
+    let lower_width = estimate_text_width(lower);
+    let offset_x = DEFAULT_OFFSET_X as f64;
 
-    let scale = PxScale::from(24.0);
-
-    // Measure text widths using rough approximation
-    let char_width_estimate = 24.0 * 0.6;
-    let upper_width = upper.len() as f32 * char_width_estimate;
-    let lower_width = lower.len() as f32 * char_width_estimate;
-
-    let offset_x = DEFAULT_OFFSET_X;
-
-    let canvas_width =
-        ((upper_width as i32 + 80).max(lower_width as i32 + offset_x + 90)).max(300) as u32;
+    // Canvas dimensions matching the TypeScript reference
+    let canvas_width = (upper_width + 80.0)
+        .max(lower_width + offset_x + 90.0)
+        .max(300.0) as u32;
     let canvas_height = 270u32;
-    let mut img = RgbaImage::new(canvas_width, canvas_height);
-    for pixel in img.pixels_mut() {
-        *pixel = Rgba([255, 255, 255, 255]);
-    }
 
-    // Draw upper text
-    draw_upper_text(&mut img, upper, &font_upper, scale);
+    let upper_esc = xml_escape(upper);
+    let lower_esc = xml_escape(lower);
 
-    // Draw lower text
-    draw_lower_text(&mut img, lower, &font_lower, scale, offset_x);
+    let upx = 70.0f64;
+    let upy = 100.0f64;
+
+    let offset_y = 130.0f64;
+    let lpx = offset_x + 130.0;
+    let lpy = offset_y + 100.0;
+
+    let ug1 = linear_gradient("ug1", 0.0, 24.0, 0.0, 122.0, &[
+        (0.0,  "rgb(0,15,36)"),
+        (0.1,  "rgb(255,255,255)"),
+        (0.18, "rgb(55,58,59)"),
+        (0.25, "rgb(55,58,59)"),
+        (0.5,  "rgb(200,200,200)"),
+        (0.75, "rgb(55,58,59)"),
+        (0.85, "rgb(25,20,31)"),
+        (0.91, "rgb(240,240,240)"),
+        (0.95, "rgb(166,175,194)"),
+        (1.0,  "rgb(50,50,50)"),
+    ]);
+
+    let ug2 = linear_gradient("ug2", 0.0, 20.0, 0.0, 100.0, &[
+        (0.0,  "rgb(253,241,0)"),
+        (0.25, "rgb(245,253,187)"),
+        (0.4,  "rgb(255,255,255)"),
+        (0.75, "rgb(253,219,9)"),
+        (0.9,  "rgb(127,53,0)"),
+        (1.0,  "rgb(243,196,11)"),
+    ]);
+
+    let ug3 = linear_gradient("ug3", 0.0, 20.0, 0.0, 100.0, &[
+        (0.0,  "rgb(255,100,0)"),
+        (0.5,  "rgb(123,0,0)"),
+        (0.51, "rgb(240,0,0)"),
+        (1.0,  "rgb(5,0,0)"),
+    ]);
+
+    let ug4 = linear_gradient("ug4", 0.0, 20.0, 0.0, 100.0, &[
+        (0.0,  "rgb(230,0,0)"),
+        (0.5,  "rgb(230,0,0)"),
+        (0.51, "rgb(240,0,0)"),
+        (1.0,  "rgb(5,0,0)"),
+    ]);
+
+    let lg1 = linear_gradient("lg1", offset_x, offset_y + 20.0, offset_x, offset_y + 118.0, &[
+        (0.0,  "rgb(0,15,36)"),
+        (0.25, "rgb(250,250,250)"),
+        (0.5,  "rgb(150,150,150)"),
+        (0.75, "rgb(55,58,59)"),
+        (0.85, "rgb(25,20,31)"),
+        (0.91, "rgb(240,240,240)"),
+        (0.95, "rgb(166,175,194)"),
+        (1.0,  "rgb(50,50,50)"),
+    ]);
+
+    let lg2 = linear_gradient("lg2", offset_x, offset_y + 20.0, offset_x, offset_y + 100.0, &[
+        (0.0,  "rgb(16,25,58)"),
+        (0.03, "rgb(255,255,255)"),
+        (0.08, "rgb(16,25,58)"),
+        (0.2,  "rgb(16,25,58)"),
+        (1.0,  "rgb(16,25,58)"),
+    ]);
+
+    let lg3 = linear_gradient("lg3", offset_x, offset_y + 20.0, offset_x, offset_y + 100.0, &[
+        (0.0,  "rgb(245,246,248)"),
+        (0.15, "rgb(255,255,255)"),
+        (0.35, "rgb(195,213,220)"),
+        (0.5,  "rgb(160,190,201)"),
+        (0.51, "rgb(160,190,201)"),
+        (0.52, "rgb(196,215,222)"),
+        (1.0,  "rgb(255,255,255)"),
+    ]);
+
+    // Upper text font spec
+    let uf = format!(
+        r#"font-family="{}" font-weight="900" font-size="100""#,
+        UPPER_FONT_FAMILY
+    );
+    // Lower text font spec
+    let lf = format!(
+        r#"font-family="{}" font-weight="900" font-size="100""#,
+        LOWER_FONT_FAMILY
+    );
+
+    // Common attribute: stroke-linejoin="round" (matches ctx.lineJoin = "round")
+    let round = r#"stroke-linejoin="round""#;
+
+    // Build SVG
+    let mut svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}">"#,
+        canvas_width, canvas_height
+    );
+
+    // Defs
+    svg.push_str("<defs>");
+    svg.push_str(&ug1);
+    svg.push_str(&ug2);
+    svg.push_str(&ug3);
+    svg.push_str(&ug4);
+    svg.push_str(&lg1);
+    svg.push_str(&lg2);
+    svg.push_str(&lg3);
+    svg.push_str("</defs>");
+
+    // White background
+    svg.push_str(r#"<rect width="100%" height="100%" fill="white"/>"#);
+
+    // Global skew group: ctx.setTransform(1, 0, -0.4, 1, 0, 0)
+    // Canvas 2D matrix(a,b,c,d,e,f) → SVG matrix(a,b,c,d,e,f)
+    // = matrix(1, 0, -0.4, 1, 0, 0)
+    svg.push_str(r#"<g transform="matrix(1,0,-0.4,1,0,0)">"#);
+
+    // ============================================================
+    // UPPER TEXT LAYERS
+    // ============================================================
+
+    // Layer 1: Black stroke outline, lineWidth=18, at (upx+4, upy+3)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="#000" stroke-width="18" fill="none" {}>{}</text>"##,
+        upx + 4.0, upy + 3.0, uf, round, upper_esc
+    ));
+
+    // Layer 2: Metallic gradient stroke, lineWidth=17, at (upx+4, upy+3)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="url(#ug1)" stroke-width="17" fill="none" {}>{}</text>"##,
+        upx + 4.0, upy + 3.0, uf, round, upper_esc
+    ));
+
+    // Layer 3: Black stroke, lineWidth=10, at (upx, upy)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="#000000" stroke-width="10" fill="none" {}>{}</text>"##,
+        upx, upy, uf, round, upper_esc
+    ));
+
+    // Layer 4: Gold gradient stroke, lineWidth=8, at (upx, upy)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="url(#ug2)" stroke-width="8" fill="none" {}>{}</text>"##,
+        upx, upy, uf, round, upper_esc
+    ));
+
+    // Layer 5: Black thin stroke, lineWidth=4, at (upx+2, upy-2)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="#000" stroke-width="4" fill="none" {}>{}</text>"##,
+        upx + 2.0, upy - 2.0, uf, round, upper_esc
+    ));
+
+    // Layer 6: White thin stroke, lineWidth=4, at (upx, upy-2)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="#FFFFFF" stroke-width="4" fill="none" {}>{}</text>"##,
+        upx, upy - 2.0, uf, round, upper_esc
+    ));
+
+    // Layer 7: Red gradient fill, at (upx, upy-2)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} fill="url(#ug3)" stroke="none">{}</text>"##,
+        upx, upy - 2.0, uf, upper_esc
+    ));
+
+    // Layer 8: Red gradient stroke (final), at (upx, upy-2)
+    // The TS sets lineWidth=1 before fillText but strokeText uses the default lineWidth;
+    // the strokeText here uses whatever lineWidth was last set (1), so stroke-width="1"
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="url(#ug4)" stroke-width="1" fill="none" {}>{}</text>"##,
+        upx, upy - 2.0, uf, round, upper_esc
+    ));
+
+    // ============================================================
+    // LOWER TEXT LAYERS
+    // ============================================================
+
+    // Layer 1: Black stroke, lineWidth=17, at (lpx+4, lpy+3)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="#000" stroke-width="17" fill="none" {}>{}</text>"##,
+        lpx + 4.0, lpy + 3.0, lf, round, lower_esc
+    ));
+
+    // Layer 2: Metallic gradient stroke, lineWidth=14, at (lpx+4, lpy+3)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="url(#lg1)" stroke-width="14" fill="none" {}>{}</text>"##,
+        lpx + 4.0, lpy + 3.0, lf, round, lower_esc
+    ));
+
+    // Layer 3: Dark blue stroke, lineWidth=12, at (lpx, lpy)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="#10193A" stroke-width="12" fill="none" {}>{}</text>"##,
+        lpx, lpy, lf, round, lower_esc
+    ));
+
+    // Layer 4: Light gray stroke, lineWidth=7, at (lpx, lpy)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="#DDDDDD" stroke-width="7" fill="none" {}>{}</text>"##,
+        lpx, lpy, lf, round, lower_esc
+    ));
+
+    // Layer 5: Dark blue gradient stroke, lineWidth=6, at (lpx, lpy)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} stroke="url(#lg2)" stroke-width="6" fill="none" {}>{}</text>"##,
+        lpx, lpy, lf, round, lower_esc
+    ));
+
+    // Layer 6: Silver/white gradient fill, at (lpx, lpy-3)
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" {} fill="url(#lg3)" stroke="none">{}</text>"##,
+        lpx, lpy - 3.0, lf, lower_esc
+    ));
+
+    svg.push_str("</g>");
+    svg.push_str("</svg>");
+
+    svg
+}
+
+/// Generate the 5k style image as PNG bytes.
+pub fn generate_5k_image(upper: &str, lower: &str) -> Vec<u8> {
+    use resvg::tiny_skia;
+    use resvg::usvg;
+
+    // Load fonts into fontdb
+    let mut fontdb = usvg::fontdb::Database::new();
+    fontdb.load_font_data(UPPER_FONT_DATA.to_vec());
+    fontdb.load_font_data(LOWER_FONT_DATA.to_vec());
+
+    // Build SVG string
+    let svg_string = build_svg(upper, lower);
+
+    // Parse SVG with usvg
+    let mut opt = usvg::Options::default();
+    *opt.fontdb_mut() = fontdb;
+
+    let tree = match usvg::Tree::from_str(&svg_string, &opt) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("SVG parse failed: {}", e);
+            return vec![];
+        }
+    };
+
+    // Render to pixmap
+    let size = tree.size().to_int_size();
+    let mut pixmap = match tiny_skia::Pixmap::new(size.width(), size.height()) {
+        Some(p) => p,
+        None => {
+            eprintln!("Pixmap creation failed");
+            return vec![];
+        }
+    };
+
+    resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
 
     // Encode to PNG
-    let mut png_bytes: Vec<u8> = Vec::new();
-    {
-        use image::ImageEncoder;
-        image::codecs::png::PngEncoder::new(&mut png_bytes)
-            .write_image(
-                img.as_raw(),
-                img.width(),
-                img.height(),
-                image::ExtendedColorType::Rgba8,
-            )
-            .expect("PNG encoding failed");
-    }
-
-    png_bytes
-}
-
-fn draw_upper_text(img: &mut RgbaImage, text: &str, font: &FontRef, scale: PxScale) {
-    let pos_x = 17i32;
-    let pos_y = 24i32;
-
-    // Layer 1: Thick black stroke
-    for dy in [-12, -6, 0, 6, 12] {
-        for dx in [-12, -6, 0, 6, 12] {
-            draw_text_at(
-                img,
-                text,
-                font,
-                scale,
-                pos_x + dx + 2,
-                pos_y + dy + 2,
-                (0, 0, 0),
-            );
-        }
-    }
-
-    // Layer 2: Gradient stroke
-    for dy in [-4, -2, 0, 2, 4] {
-        for dx in [-4, -2, 0, 2, 4] {
-            let t = (dy + 4) as f32 / 8.0;
-            let color = upper_stroke_gradient(t.clamp(0.0, 1.0));
-            draw_text_at(img, text, font, scale, pos_x + dx, pos_y + dy, color);
-        }
-    }
-
-    // Layer 3: Fill
-    draw_text_at(img, text, font, scale, pos_x, pos_y - 2, (255, 200, 0));
-}
-
-fn draw_lower_text(img: &mut RgbaImage, text: &str, font: &FontRef, scale: PxScale, offset_x: i32) {
-    let _offset_y = 130i32;
-    let pos_x = offset_x + 33;
-    let pos_y = 131;
-
-    // Layer 1: Black stroke
-    for dy in [-10, -5, 0, 5, 10] {
-        for dx in [-10, -5, 0, 5, 10] {
-            draw_text_at(
-                img,
-                text,
-                font,
-                scale,
-                pos_x + dx + 2,
-                pos_y + dy + 2,
-                (0, 0, 0),
-            );
-        }
-    }
-
-    // Layer 2: Gradient stroke
-    for dy in [-3, -1, 0, 1, 3] {
-        for dx in [-3, -1, 0, 1, 3] {
-            let t = (dy + 3) as f32 / 6.0;
-            let color = lower_stroke_gradient(t.clamp(0.0, 1.0));
-            draw_text_at(img, text, font, scale, pos_x + dx, pos_y + dy, color);
-        }
-    }
-
-    // Layer 3: Fill
-    draw_text_at(img, text, font, scale, pos_x, pos_y - 3, (200, 210, 220));
-}
-
-fn draw_text_at(
-    img: &mut RgbaImage,
-    text: &str,
-    font: &FontRef,
-    scale: PxScale,
-    x: i32,
-    y: i32,
-    color: (u8, u8, u8),
-) {
-    use ab_glyph::{Font, ScaleFont};
-
-    let scaled_font = font.as_scaled(scale);
-    let mut x_pos = x as f32;
-    let y_pos = y as f32;
-
-    for c in text.chars() {
-        let glyph = scaled_font.scaled_glyph(c);
-        let mut positioned_glyph = glyph;
-        positioned_glyph.position = ab_glyph::point(x_pos, y_pos);
-        x_pos += scaled_font.h_advance(positioned_glyph.id);
-
-        if let Some(outlined) = font.outline_glyph(positioned_glyph) {
-            let bounds = outlined.px_bounds();
-            eprintln!("  Glyph '{}' bounds: {:?}", c, bounds);
-            let img_w = img.width();
-            let img_h = img.height();
-
-            outlined.draw(|px, py, coverage| {
-                let px = bounds.min.x as i32 + px as i32;
-                let py = bounds.min.y as i32 + py as i32;
-
-                if px >= 0 && py >= 0 && (px as u32) < img_w && (py as u32) < img_h {
-                    let alpha = (coverage * 255.0) as u8;
-                    if alpha > 1 {
-                        let px = px as u32;
-                        let py = py as u32;
-                        img.put_pixel(px, py, Rgba([color.0, color.1, color.2, alpha]));
-                    }
-                }
-            });
+    match pixmap.encode_png() {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            eprintln!("PNG encode failed: {}", e);
+            vec![]
         }
     }
 }

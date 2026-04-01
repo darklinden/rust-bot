@@ -23,3 +23,5 @@ target
 .env
 
 qq-bot-*.tar.gz
+
+bot_run/test_output/*

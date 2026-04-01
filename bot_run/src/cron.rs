@@ -427,7 +427,7 @@ impl Feature for CronFeature {
             id
         };
 
-        let target_ts = target_time.and_utc().timestamp();
+        let target_ts = target_time.and_local_timezone(Local).unwrap().timestamp();
 
         let redis_task = CronTask {
             id: task_id,
