@@ -8,6 +8,7 @@ pub mod jrrp;
 pub mod loli;
 pub mod redis_client;
 pub mod sdimage;
+pub mod video_prompt;
 
 pub use bot_lib::structs::MessageSegment;
 
@@ -20,3 +21,4 @@ pub use self::gold::{
 };
 pub use self::jrrp::JrrpFeature;
 pub use self::sdimage::{build_workflow, percent_encode, resolve_model, SdParams};
+pub use self::video_prompt::VideoPromptFeature;

@@ -245,8 +245,7 @@ impl CronFeature {
 
         let day_str =
             if !time_parts.is_empty() && (time_parts[0] == "今天" || time_parts[0] == "明天") {
-                let d = time_parts[0];
-                d
+                time_parts[0]
             } else {
                 "今天"
             };

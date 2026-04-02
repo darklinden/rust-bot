@@ -1,6 +1,7 @@
 use bot_lib::{logger, NapcatWebSocket, Segment};
 use bot_run::feature::{Feature, FeatureConfig, MessageContext, FEATURE_MANAGER};
 use bot_run::sdimage::SdImageResult;
+use bot_run::video_prompt::VideoPromptResult;
 use dotenvy::dotenv;
 use std::env;
 use std::sync::Arc;
@@ -58,8 +59,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let (tx, mut sd_rx) = mpsc::channel::<SdImageResult>(32);
     let (cron_tx, mut cron_rx) = mpsc::channel::<bot_run::cron::CronResult>(32);
+    let (vp_tx, mut vp_rx) = mpsc::channel::<VideoPromptResult>(32);
     let ws_sd = ws_arc.clone();
     let ws_cron = ws_arc.clone();
+    let ws_vp = ws_arc.clone();
 
     let features_enabled: Vec<String> = env::var("FEATURES_ENABLED")
         .unwrap_or_default()
@@ -116,6 +119,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bot_run::cron::CronFeature::feature_name(),
             move || {
                 Arc::new(bot_run::cron::CronFeature::new(cron_tx.clone()))
+                    as Arc<dyn Feature + Send + Sync>
+            },
+        );
+        manager.register(
+            bot_run::video_prompt::VideoPromptFeature::feature_id(),
+            bot_run::video_prompt::VideoPromptFeature::feature_name(),
+            move || {
+                Arc::new(bot_run::video_prompt::VideoPromptFeature::new(vp_tx.clone()))
                     as Arc<dyn Feature + Send + Sync>
             },
         );
@@ -211,6 +222,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Segment::text(format!(" 提醒你：{}", result.message)),
             ];
             let _ = send_reply(&ws_cron, &result.context, segments).await;
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(result) = vp_rx.recv().await {
+            let name = if result.context.display_name().is_empty() {
+                result.context.nickname.clone()
+            } else {
+                result.context.display_name()
+            };
+            let segments = vec![
+                Segment::text(format!("@{} 视频提示词生成完成：\n", name)),
+                result.segment,
+            ];
+            let _ = send_reply(&ws_vp, &result.context, segments).await;
         }
     });
 
