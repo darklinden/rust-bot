@@ -1,6 +1,7 @@
 use bot_lib::{logger, NapcatWebSocket, Segment};
 use bot_run::feature::{Feature, FeatureConfig, MessageContext, FEATURE_MANAGER};
 use bot_run::sdimage::SdImageResult;
+use bot_run::image_matting::ImageMattingResult;
 use bot_run::video_prompt::VideoPromptResult;
 use dotenvy::dotenv;
 use std::env;
@@ -60,9 +61,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx, mut sd_rx) = mpsc::channel::<SdImageResult>(32);
     let (cron_tx, mut cron_rx) = mpsc::channel::<bot_run::cron::CronResult>(32);
     let (vp_tx, mut vp_rx) = mpsc::channel::<VideoPromptResult>(32);
+    let (matting_tx, mut matting_rx) = mpsc::channel::<ImageMattingResult>(32);
     let ws_sd = ws_arc.clone();
     let ws_cron = ws_arc.clone();
     let ws_vp = ws_arc.clone();
+    let ws_matting = ws_arc.clone();
 
     let features_enabled: Vec<String> = env::var("FEATURES_ENABLED")
         .unwrap_or_default()
@@ -127,6 +130,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bot_run::video_prompt::VideoPromptFeature::feature_name(),
             move || {
                 Arc::new(bot_run::video_prompt::VideoPromptFeature::new(vp_tx.clone()))
+                    as Arc<dyn Feature + Send + Sync>
+            },
+        );
+        manager.register(
+            bot_run::image_matting::ImageMattingFeature::feature_id(),
+            bot_run::image_matting::ImageMattingFeature::feature_name(),
+            move || {
+                Arc::new(bot_run::image_matting::ImageMattingFeature::new(matting_tx.clone()))
                     as Arc<dyn Feature + Send + Sync>
             },
         );
@@ -237,6 +248,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 result.segment,
             ];
             let _ = send_reply(&ws_vp, &result.context, segments).await;
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(result) = matting_rx.recv().await {
+            let segments = vec![result.segment];
+            let _ = send_reply(&ws_matting, &result.context, segments).await;
         }
     });
 

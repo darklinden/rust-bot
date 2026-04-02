@@ -4,6 +4,7 @@ pub mod draw5k;
 pub mod dup_check;
 pub mod feature;
 pub mod gold;
+pub mod image_matting;
 pub mod jrrp;
 pub mod loli;
 pub mod redis_client;
@@ -19,6 +20,7 @@ pub use self::feature::{msg_segment_from_string, Feature, FeatureConfig, Feature
 pub use self::gold::{
     build_response, format_price, parse_f64, stamp_to_string, IAPIRequestResult, ICachedPriceData,
 };
+pub use self::image_matting::{ImageMattingFeature, ImageMattingResult};
 pub use self::jrrp::JrrpFeature;
 pub use self::sdimage::{build_workflow, percent_encode, resolve_model, SdParams};
 pub use self::video_prompt::VideoPromptFeature;
