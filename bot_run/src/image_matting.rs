@@ -4,8 +4,10 @@ use base64::{engine::general_purpose::STANDARD as BASE64, Engine};
 use bot_lib::structs::{ImageData, MessageSegment};
 use reqwest::header::HeaderValue;
 use serde_json::Value;
+use std::collections::VecDeque;
 use std::env;
-use tokio::sync::mpsc;
+use std::sync::Arc;
+use tokio::sync::{mpsc, Mutex};
 
 pub struct ImageMattingResult {
     pub context: MessageContext,
@@ -13,14 +15,16 @@ pub struct ImageMattingResult {
 }
 
 pub type ImageMattingSender = mpsc::Sender<ImageMattingResult>;
+pub type MsgQueue = Arc<Mutex<VecDeque<Value>>>;
 
 pub struct ImageMattingFeature {
     sender: ImageMattingSender,
+    msg_queue: MsgQueue,
 }
 
 impl ImageMattingFeature {
-    pub fn new(sender: ImageMattingSender) -> Self {
-        Self { sender }
+    pub fn new(sender: ImageMattingSender, msg_queue: MsgQueue) -> Self {
+        Self { sender, msg_queue }
     }
 
     pub fn feature_id() -> &'static str {
@@ -34,6 +38,31 @@ impl ImageMattingFeature {
 
 fn extract_image_url(context: &MessageContext) -> Option<String> {
     for seg in &context.message {
+        if seg.get("type").and_then(|v| v.as_str()) == Some("image") {
+            if let Some(url) = seg.pointer("/data/url").and_then(|v| v.as_str()) {
+                if !url.is_empty() {
+                    return Some(url.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn extract_reply_id(context: &MessageContext) -> Option<i64> {
+    for seg in &context.message {
+        if seg.get("type").and_then(|v| v.as_str()) == Some("reply") {
+            return seg.pointer("/data/id").and_then(|v| {
+                v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+            });
+        }
+    }
+    None
+}
+
+fn extract_image_url_from_msg(json: &Value) -> Option<String> {
+    let messages = json.get("message")?.as_array()?;
+    for seg in messages {
         if seg.get("type").and_then(|v| v.as_str()) == Some("image") {
             if let Some(url) = seg.pointer("/data/url").and_then(|v| v.as_str()) {
                 if !url.is_empty() {
@@ -181,9 +210,30 @@ impl Feature for ImageMattingFeature {
         let image_url = match extract_image_url(context) {
             Some(url) => url,
             None => {
-                return Some(msg_segment_from_string(
-                    "用法: -image-matting <图片>\n请在消息中附带一张图片以进行抠图。".to_string(),
-                ));
+                if let Some(reply_id) = extract_reply_id(context) {
+                    let queue = self.msg_queue.lock().await;
+                    let found = queue.iter().find_map(|stored| {
+                        let mid = stored.get("message_id").and_then(|v| v.as_i64())?;
+                        if mid == reply_id {
+                            extract_image_url_from_msg(stored)
+                        } else {
+                            None
+                        }
+                    });
+                    match found {
+                        Some(url) => url,
+                        None => {
+                            return Some(msg_segment_from_string(
+                                "未能在历史消息中找到引用消息的图片。".to_string(),
+                            ));
+                        }
+                    }
+                } else {
+                    return Some(msg_segment_from_string(
+                        "用法: -image-matting <图片>\n请在消息中附带一张图片，或引用一条包含图片的消息。"
+                            .to_string(),
+                    ));
+                }
             }
         };
 

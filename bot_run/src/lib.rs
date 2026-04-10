@@ -20,7 +20,7 @@ pub use self::feature::{msg_segment_from_string, Feature, FeatureConfig, Feature
 pub use self::gold::{
     build_response, format_price, parse_f64, stamp_to_string, IAPIRequestResult, ICachedPriceData,
 };
-pub use self::image_matting::{ImageMattingFeature, ImageMattingResult};
+pub use self::image_matting::{ImageMattingFeature, ImageMattingResult, MsgQueue};
 pub use self::jrrp::JrrpFeature;
 pub use self::sdimage::{build_workflow, percent_encode, resolve_model, SdParams};
 pub use self::video_prompt::VideoPromptFeature;

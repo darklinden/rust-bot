@@ -1,12 +1,15 @@
 use bot_lib::{logger, NapcatWebSocket, Segment};
 use bot_run::feature::{Feature, FeatureConfig, MessageContext, FEATURE_MANAGER};
+use bot_run::image_matting::{ImageMattingResult, MsgQueue};
 use bot_run::sdimage::SdImageResult;
-use bot_run::image_matting::ImageMattingResult;
 use bot_run::video_prompt::VideoPromptResult;
 use dotenvy::dotenv;
+use std::collections::VecDeque;
 use std::env;
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
+
+const MSG_QUEUE_MAX_LEN: usize = 50;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -62,6 +65,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (cron_tx, mut cron_rx) = mpsc::channel::<bot_run::cron::CronResult>(32);
     let (vp_tx, mut vp_rx) = mpsc::channel::<VideoPromptResult>(32);
     let (matting_tx, mut matting_rx) = mpsc::channel::<ImageMattingResult>(32);
+    let msg_queue: MsgQueue = Arc::new(Mutex::new(VecDeque::new()));
     let ws_sd = ws_arc.clone();
     let ws_cron = ws_arc.clone();
     let ws_vp = ws_arc.clone();
@@ -129,16 +133,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bot_run::video_prompt::VideoPromptFeature::feature_id(),
             bot_run::video_prompt::VideoPromptFeature::feature_name(),
             move || {
-                Arc::new(bot_run::video_prompt::VideoPromptFeature::new(vp_tx.clone()))
-                    as Arc<dyn Feature + Send + Sync>
+                Arc::new(bot_run::video_prompt::VideoPromptFeature::new(
+                    vp_tx.clone(),
+                )) as Arc<dyn Feature + Send + Sync>
             },
         );
+        let matting_queue = msg_queue.clone();
         manager.register(
             bot_run::image_matting::ImageMattingFeature::feature_id(),
             bot_run::image_matting::ImageMattingFeature::feature_name(),
             move || {
-                Arc::new(bot_run::image_matting::ImageMattingFeature::new(matting_tx.clone()))
-                    as Arc<dyn Feature + Send + Sync>
+                Arc::new(bot_run::image_matting::ImageMattingFeature::new(
+                    matting_tx.clone(),
+                    matting_queue.clone(),
+                )) as Arc<dyn Feature + Send + Sync>
             },
         );
 
@@ -161,6 +169,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let ws_features = ws_arc.clone();
     let fm = FEATURE_MANAGER.clone();
+    let event_msg_queue = msg_queue.clone();
     tokio::spawn(async move {
         let mut rx = ws_features.event_receiver();
         while let Ok(json) = rx.recv().await {
@@ -175,6 +184,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .unwrap_or("");
             if message_type != "group" && message_type != "private" {
                 continue;
+            }
+
+            // Push message into history queue for reference lookups
+            {
+                let mut queue = event_msg_queue.lock().await;
+                queue.push_back(json.clone());
+                while queue.len() > MSG_QUEUE_MAX_LEN {
+                    queue.pop_front();
+                }
             }
 
             let context = MessageContext::from_json(&json);
