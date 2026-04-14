@@ -2,7 +2,8 @@ use crate::feature::{Feature, MessageContext};
 use crate::msg_segment_from_string;
 use crate::redis_client::redis;
 use async_trait::async_trait;
-use bot_lib::structs::MessageSegment;
+use base64::Engine;
+use bot_lib::structs::{MessageSegment, Segment};
 use chrono::{TimeZone, Utc};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -692,6 +693,279 @@ pub fn build_response(data: &ICachedPriceData, usd_cny_rate: Option<f64>) -> Str
     parts.join("\n")
 }
 
+// ─── SVG / PNG rendering ─────────────────────────────────────────────────────
+
+static FONT_DATA: &[u8] = include_bytes!("../assets/fonts/SourceHanSans-Regular.otf");
+const FONT_FAMILY: &str = "Source Han Sans CN";
+
+const CARD_WIDTH: u32 = 880;
+const PADDING_X: f64 = 36.0;
+const HEADER_H: f64 = 56.0;
+const ROW_H: f64 = 36.0;
+const SECTION_GAP: f64 = 20.0;
+
+fn svg_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+fn change_color(pct: &str) -> &'static str {
+    let trimmed = pct.trim().trim_end_matches('%');
+    if trimmed == "N/A" || trimmed.is_empty() {
+        return "#888888";
+    }
+    match trimmed.parse::<f64>() {
+        Ok(v) if v > 0.0 => "#E53935",
+        Ok(v) if v < 0.0 => "#43A047",
+        _ => "#888888",
+    }
+}
+
+fn build_metal_section(
+    result: Option<&IAPIRequestResult>,
+    label: &str,
+    unit: &str,
+    indicator_color: &str,
+    y_start: f64,
+    converted_cny: Option<String>,
+) -> (String, f64) {
+    let mut svg = String::new();
+    let w = CARD_WIDTH as f64;
+    let col1 = PADDING_X;
+    let col2 = PADDING_X + 200.0;
+    let col3 = PADDING_X + 420.0;
+    let font = FONT_FAMILY;
+
+    svg.push_str(&format!(
+        r##"<rect x="0" y="{}" width="{}" height="{}" fill="#F5F5F5"/>"##,
+        y_start, w, ROW_H
+    ));
+    svg.push_str(&format!(
+        r##"<circle cx="{}" cy="{}" r="6" fill="{}"/>"##,
+        col1 + 6.0,
+        y_start + 18.0,
+        indicator_color
+    ));
+    svg.push_str(&format!(
+        r##"<text x="{}" y="{}" font-family="{}" font-size="15" font-weight="bold" fill="#333">{}</text>"##,
+        col1 + 18.0,
+        y_start + 24.0,
+        font,
+        svg_escape(label)
+    ));
+
+    let mut y = y_start + ROW_H;
+
+    match result {
+        Some(r) => {
+            let price_display = if let Some(ref cny) = converted_cny {
+                format!("{} {} (≈ {}元/克)", r.price, unit, cny)
+            } else {
+                format!("{} {}", r.price, unit)
+            };
+            svg.push_str(&format!(
+                r##"<text x="{}" y="{}" font-family="{}" font-size="22" font-weight="bold" fill="#222">{}</text>"##,
+                col1,
+                y + 28.0,
+                font,
+                svg_escape(&price_display)
+            ));
+            y += 38.0;
+
+            let ohlc = format!(
+                "开盘: {}  最高: {}  最低: {}",
+                r.open_price, r.high_price, r.low_price
+            );
+            svg.push_str(&format!(
+                r##"<text x="{}" y="{}" font-family="{}" font-size="14" fill="#555">{}</text>"##,
+                col1,
+                y + 22.0,
+                font,
+                svg_escape(&ohlc)
+            ));
+            y += 30.0;
+
+            let pct_color = change_color(&r.change_percent);
+            svg.push_str(&format!(
+                r##"<text x="{}" y="{}" font-family="{}" font-size="14" fill="{}">涨跌: {}</text>"##,
+                col1,
+                y + 22.0,
+                font,
+                pct_color,
+                svg_escape(&r.change_percent)
+            ));
+            svg.push_str(&format!(
+                r##"<text x="{}" y="{}" font-family="{}" font-size="14" fill="#555">昨收: {}</text>"##,
+                col2,
+                y + 22.0,
+                font,
+                svg_escape(&r.prev_close_price)
+            ));
+            svg.push_str(&format!(
+                r##"<text x="{}" y="{}" font-family="{}" font-size="14" fill="#999">{}</text>"##,
+                col3,
+                y + 22.0,
+                font,
+                svg_escape(&r.update)
+            ));
+            y += 30.0;
+        }
+        None => {
+            svg.push_str(&format!(
+                r##"<text x="{}" y="{}" font-family="{}" font-size="16" fill="#999">暂无数据</text>"##,
+                col1,
+                y + 26.0,
+                font
+            ));
+            y += 36.0;
+        }
+    }
+
+    (svg, y - y_start)
+}
+
+pub fn build_gold_svg(data: &ICachedPriceData, usd_cny_rate: Option<f64>) -> String {
+    let w = CARD_WIDTH as f64;
+    let font = FONT_FAMILY;
+
+    let gold_usd_cny = usd_cny_rate.and_then(|rate| {
+        data.gold_usd
+            .as_ref()
+            .and_then(|g| g.price.parse::<f64>().ok())
+            .map(|p| format_price(p * rate / OUNCE_TO_GRAM, 2))
+    });
+    let silver_usd_cny = usd_cny_rate.and_then(|rate| {
+        data.silver_usd
+            .as_ref()
+            .and_then(|s| s.price.parse::<f64>().ok())
+            .map(|p| format_price(p * rate / OUNCE_TO_GRAM, 2))
+    });
+
+    let mut y = 0.0_f64;
+
+    let header_svg = format!(
+        r##"<rect x="0" y="0" width="{}" height="{}" rx="12" fill="#1A237E"/><text x="{}" y="{}" font-family="{}" font-size="22" font-weight="bold" fill="#FFF">今日金银价格</text>"##,
+        w, HEADER_H, PADDING_X, 37.0, font
+    );
+    y += HEADER_H + 8.0;
+
+    let source1_svg = format!(
+        r##"<text x="{}" y="{}" font-family="{}" font-size="12" fill="#999">数据来源: Jisu API (jisuapi.com)</text>"##,
+        PADDING_X,
+        y + 16.0,
+        font,
+    );
+    y += 24.0;
+
+    let (gold_cny_svg, gold_cny_h) = build_metal_section(
+        data.gold_cny.as_ref(),
+        "黄金 (国内)",
+        "元/克",
+        "#FFD700",
+        y,
+        None,
+    );
+    y += gold_cny_h + 4.0;
+
+    let (silver_cny_svg, silver_cny_h) = build_metal_section(
+        data.silver_cny.as_ref(),
+        "白银 (国内)",
+        "元/克",
+        "#C0C0C0",
+        y,
+        None,
+    );
+    y += silver_cny_h + SECTION_GAP;
+
+    let source2_svg = format!(
+        r##"<text x="{}" y="{}" font-family="{}" font-size="12" fill="#999">数据来源: GoldAPI (gold-api.com) / CurrencyAPI (currencyapi.net)</text>"##,
+        PADDING_X,
+        y + 16.0,
+        font,
+    );
+    y += 24.0;
+
+    let (gold_usd_svg, gold_usd_h) = build_metal_section(
+        data.gold_usd.as_ref(),
+        "黄金 (国际)",
+        "USD/盎司",
+        "#FFD700",
+        y,
+        gold_usd_cny,
+    );
+    y += gold_usd_h + 4.0;
+
+    let (silver_usd_svg, silver_usd_h) = build_metal_section(
+        data.silver_usd.as_ref(),
+        "白银 (国际)",
+        "USD/盎司",
+        "#C0C0C0",
+        y,
+        silver_usd_cny,
+    );
+    y += silver_usd_h + 16.0;
+
+    let total_h = y;
+
+    let mut svg = format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="{}" height="{}">"#,
+        w, total_h
+    );
+    svg.push_str(&format!(
+        r##"<rect width="{}" height="{}" rx="12" fill="#FFFFFF"/>"##,
+        w, total_h
+    ));
+    svg.push_str(&header_svg);
+    svg.push_str(&source1_svg);
+    svg.push_str(&gold_cny_svg);
+    svg.push_str(&silver_cny_svg);
+    svg.push_str(&source2_svg);
+    svg.push_str(&gold_usd_svg);
+    svg.push_str(&silver_usd_svg);
+    svg.push_str("</svg>");
+    svg
+}
+
+pub fn render_gold_svg_to_png(svg: &str) -> Vec<u8> {
+    use resvg::tiny_skia;
+    use resvg::usvg;
+
+    let mut fontdb = usvg::fontdb::Database::new();
+    fontdb.load_font_data(FONT_DATA.to_vec());
+
+    let mut opt = usvg::Options::default();
+    *opt.fontdb_mut() = fontdb;
+
+    let tree = match usvg::Tree::from_str(svg, &opt) {
+        Ok(t) => t,
+        Err(e) => {
+            log::error!("[Gold] SVG parse failed: {}", e);
+            return vec![];
+        }
+    };
+
+    let size = tree.size().to_int_size();
+    let mut pixmap = match tiny_skia::Pixmap::new(size.width(), size.height()) {
+        Some(p) => p,
+        None => {
+            log::error!("[Gold] Pixmap creation failed");
+            return vec![];
+        }
+    };
+
+    resvg::render(&tree, tiny_skia::Transform::default(), &mut pixmap.as_mut());
+
+    match pixmap.encode_png() {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            log::error!("[Gold] PNG encode failed: {}", e);
+            vec![]
+        }
+    }
+}
+
 // ─── Feature impl ─────────────────────────────────────────────────────────────
 
 pub struct GoldFeature;
@@ -745,7 +1019,17 @@ impl Feature for GoldFeature {
         _msg: &Value,
     ) -> Option<MessageSegment> {
         let (data, usd_cny_rate) = get_or_fetch_prices().await;
-        let response = build_response(&data, usd_cny_rate);
-        Some(msg_segment_from_string(response))
+
+        let svg = build_gold_svg(&data, usd_cny_rate);
+        let png_bytes = render_gold_svg_to_png(&svg);
+
+        if png_bytes.is_empty() {
+            log::warn!("[Gold] Image render failed, falling back to text");
+            let response = build_response(&data, usd_cny_rate);
+            return Some(msg_segment_from_string(response));
+        }
+
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+        Some(Segment::image(format!("base64://{}", b64)))
     }
 }
