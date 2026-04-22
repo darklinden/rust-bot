@@ -1,6 +1,7 @@
 use bot_lib::{logger, NapcatWebSocket, Segment};
 use bot_run::feature::{Feature, FeatureConfig, MessageContext, FEATURE_MANAGER};
 use bot_run::image_matting::{ImageMattingResult, MsgQueue};
+use bot_run::loli::LoliTtsResult;
 use bot_run::sdimage::SdImageResult;
 use bot_run::video_prompt::VideoPromptResult;
 use dotenvy::dotenv;
@@ -65,11 +66,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (cron_tx, mut cron_rx) = mpsc::channel::<bot_run::cron::CronResult>(32);
     let (vp_tx, mut vp_rx) = mpsc::channel::<VideoPromptResult>(32);
     let (matting_tx, mut matting_rx) = mpsc::channel::<ImageMattingResult>(32);
+    let (loli_tts_tx, mut loli_tts_rx) = mpsc::channel::<LoliTtsResult>(32);
     let msg_queue: MsgQueue = Arc::new(Mutex::new(VecDeque::new()));
     let ws_sd = ws_arc.clone();
     let ws_cron = ws_arc.clone();
     let ws_vp = ws_arc.clone();
     let ws_matting = ws_arc.clone();
+    let ws_loli_tts = ws_arc.clone();
 
     let features_enabled: Vec<String> = env::var("FEATURES_ENABLED")
         .unwrap_or_default()
@@ -111,7 +114,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         manager.register(
             bot_run::loli::LoliFeature::feature_id(),
             bot_run::loli::LoliFeature::feature_name(),
-            || Arc::new(bot_run::loli::LoliFeature::new()) as Arc<dyn Feature + Send + Sync>,
+            move || {
+                Arc::new(bot_run::loli::LoliFeature::new(loli_tts_tx.clone()))
+                    as Arc<dyn Feature + Send + Sync>
+            },
         );
         manager.register(
             bot_run::sdimage::SdImageFeature::feature_id(),
@@ -273,6 +279,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(result) = matting_rx.recv().await {
             let segments = vec![result.segment];
             let _ = send_reply(&ws_matting, &result.context, segments).await;
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(result) = loli_tts_rx.recv().await {
+            let segments = vec![result.segment];
+            let _ = send_reply(&ws_loli_tts, &result.context, segments).await;
         }
     });
 
