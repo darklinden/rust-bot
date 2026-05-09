@@ -7,6 +7,7 @@ pub mod gold;
 pub mod image_matting;
 pub mod jrrp;
 pub mod loli;
+pub mod tts;
 pub mod redis_client;
 pub mod sdimage;
 pub mod video_prompt;
@@ -25,3 +26,4 @@ pub use self::image_matting::{ImageMattingFeature, ImageMattingResult, MsgQueue}
 pub use self::jrrp::JrrpFeature;
 pub use self::sdimage::{build_workflow, percent_encode, resolve_model, SdParams};
 pub use self::video_prompt::VideoPromptFeature;
+pub use self::tts::TtsFeature;
