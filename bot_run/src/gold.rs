@@ -2,7 +2,6 @@ use crate::feature::{Feature, MessageContext};
 use crate::msg_segment_from_string;
 use crate::redis_client::redis;
 use async_trait::async_trait;
-use base64::Engine;
 use bot_lib::structs::{MessageSegment, Segment};
 use chrono::{TimeZone, Utc};
 use redis::AsyncCommands;
@@ -1029,7 +1028,12 @@ impl Feature for GoldFeature {
             return Some(msg_segment_from_string(response));
         }
 
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
-        Some(Segment::image(format!("base64://{}", b64)))
+        match crate::media_file::write_media(&png_bytes, "png") {
+            Ok(file_uri) => Some(Segment::image(file_uri)),
+            Err(e) => {
+                log::error!("[Gold] 写入图片文件失败: {}", e);
+                Some(msg_segment_from_string("金价图片生成失败，请稍后重试。".to_string()))
+            }
+        }
     }
 }

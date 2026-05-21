@@ -165,13 +165,14 @@ async fn process_and_deliver(
         }
     };
 
-    let b64 = BASE64.encode(&result_bytes);
+    let file_uri = crate::media_file::write_media(&result_bytes, "png")
+        .unwrap_or_else(|_| format!("base64://{}", BASE64.encode(&result_bytes)));
     let _ = sender
         .send(ImageMattingResult {
             context,
             segment: MessageSegment::Image {
                 data: ImageData {
-                    file: format!("base64://{}", b64),
+                    file: file_uri,
                     summary: Some("matted.png".to_string()),
                     sub_type: None,
                     url: None,

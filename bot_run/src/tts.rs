@@ -41,7 +41,9 @@ impl TtsFeature {
     }
 
     pub fn build_tts_record_segment(audio_bytes: &[u8]) -> MessageSegment {
-        Segment::record(format!("base64://{}", BASE64.encode(audio_bytes)))
+        let file_uri = crate::media_file::write_media(audio_bytes, "wav")
+            .unwrap_or_else(|_| format!("base64://{}", BASE64.encode(audio_bytes)));
+        Segment::record(file_uri)
     }
 
     async fn synthesize_tts(text: &str) -> Result<Vec<u8>, String> {
@@ -186,12 +188,23 @@ mod tests {
     }
 
     #[test]
-    fn build_tts_record_segment_wraps_base64_audio() {
+    fn build_tts_record_segment_uses_file_uri() {
+        let tmp = std::env::temp_dir().join("bot_media_test_tts");
+        std::env::set_var("BOT_MEDIA_DIR", &tmp);
         let segment = TtsFeature::build_tts_record_segment(b"hi");
+        let _ = std::fs::remove_dir_all(&tmp);
         match segment {
             MessageSegment::Record { data } => {
-                assert_eq!(data.file, "base64://aGk=");
-                assert_eq!(data.file_size, None);
+                assert!(
+                    data.file.starts_with("file://"),
+                    "expected file:// URI, got: {}",
+                    data.file
+                );
+                assert!(
+                    data.file.ends_with(".wav"),
+                    "expected .wav extension, got: {}",
+                    data.file
+                );
             }
             _ => panic!("expected Record segment"),
         }

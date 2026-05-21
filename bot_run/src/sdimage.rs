@@ -296,13 +296,14 @@ async fn poll_and_deliver(
             }
         };
 
-        let b64 = BASE64.encode(&img_bytes);
+        let file_uri = crate::media_file::write_media(&img_bytes, "png")
+            .unwrap_or_else(|_| format!("base64://{}", BASE64.encode(&img_bytes)));
         let _ = sender
             .send(SdImageResult {
                 context,
                 segment: MessageSegment::Image {
                     data: ImageData {
-                        file: format!("base64://{}", b64),
+                        file: file_uri,
                         summary: Some(filename),
                         sub_type: None,
                         url: None,
