@@ -5,6 +5,7 @@ use bot_run::loli::LoliTtsResult;
 use bot_run::tts::TtsResult;
 use bot_run::sdimage::SdImageResult;
 use bot_run::video_prompt::VideoPromptResult;
+use bot_run::grsai_gpt_image::GptImageResult;
 use dotenvy::dotenv;
 use std::collections::VecDeque;
 use std::env;
@@ -69,6 +70,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (matting_tx, mut matting_rx) = mpsc::channel::<ImageMattingResult>(32);
     let (loli_tts_tx, mut loli_tts_rx) = mpsc::channel::<LoliTtsResult>(32);
     let (tts_tx, mut tts_rx) = mpsc::channel::<TtsResult>(32);
+    let (gimg_tx, mut gimg_rx) = mpsc::channel::<GptImageResult>(32);
     let msg_queue: MsgQueue = Arc::new(Mutex::new(VecDeque::new()));
     let ws_sd = ws_arc.clone();
     let ws_cron = ws_arc.clone();
@@ -76,6 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws_matting = ws_arc.clone();
     let ws_loli_tts = ws_arc.clone();
     let ws_tts = ws_arc.clone();
+    let ws_gimg = ws_arc.clone();
 
     let features_enabled: Vec<String> = env::var("FEATURES_ENABLED")
         .unwrap_or_default()
@@ -127,6 +130,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bot_run::tts::TtsFeature::feature_name(),
             move || {
                 Arc::new(bot_run::tts::TtsFeature::new(tts_tx.clone()))
+                    as Arc<dyn Feature + Send + Sync>
+            },
+        );
+        manager.register(
+            bot_run::grsai_gpt_image::GptImageFeature::feature_id(),
+            bot_run::grsai_gpt_image::GptImageFeature::feature_name(),
+            move || {
+                Arc::new(bot_run::grsai_gpt_image::GptImageFeature::new(gimg_tx.clone()))
                     as Arc<dyn Feature + Send + Sync>
             },
         );
@@ -304,6 +315,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(result) = tts_rx.recv().await {
             let segments = vec![result.segment];
             let _ = send_reply(&ws_tts, &result.context, segments).await;
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(result) = gimg_rx.recv().await {
+            let ctx = MessageContext {
+                self_id: 0,
+                user_id: result.user_id,
+                group_id: None,
+                message_id: 0,
+                message: vec![],
+                raw_message: String::new(),
+                nickname: String::new(),
+                card: String::new(),
+            };
+            let segments = vec![result.segment];
+            let _ = send_reply(&ws_gimg, &ctx, segments).await;
         }
     });
 
