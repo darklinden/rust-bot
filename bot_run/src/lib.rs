@@ -11,6 +11,7 @@ pub mod loli;
 pub mod media_file;
 pub mod redis_client;
 pub mod sdimage;
+pub mod tldr;
 pub mod tts;
 pub mod video_prompt;
 
@@ -29,4 +30,4 @@ pub use self::jrrp::JrrpFeature;
 pub use self::sdimage::{build_workflow, percent_encode, resolve_model, SdParams};
 pub use self::video_prompt::VideoPromptFeature;
 pub use self::tts::TtsFeature;
-pub use self::grsai_gpt_image::{GptImageFeature, GptImageResult};
+ pub use self::tldr::{TldrFeature, TldrResult};

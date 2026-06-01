@@ -256,13 +256,11 @@ fn build_size_card_svg() -> (String, u32) {
     let col1_x = PADDING_X;
     let label_w = 48.0;
 
-    for i in 0..RATIO_COUNT {
+    for (i, &(label, value)) in SIZE_OPTIONS.iter().enumerate().take(RATIO_COUNT) {
         let col = (i % 3) as f64;
         let row = (i / 3) as f64;
         let cx = col1_x + col * 250.0;
         let cy = y + row * ROW_H;
-
-        let (label, value) = SIZE_OPTIONS[i];
         svg_lines.push(format!(
             r##"<text x="{}" y="{}" font-family="{}" font-size="14" font-weight="bold" fill="#1A237E">{}</text>"##,
             cx, cy + 24.0, font, label
@@ -276,7 +274,7 @@ fn build_size_card_svg() -> (String, u32) {
         ));
     }
 
-    let ratio_rows = (RATIO_COUNT + 2) / 3;
+    let ratio_rows = RATIO_COUNT.div_ceil(3);
     y += ratio_rows as f64 * ROW_H + 12.0;
 
     // ── Section B ──
@@ -307,7 +305,7 @@ fn build_size_card_svg() -> (String, u32) {
         ));
     }
 
-    let pixel_rows = (pixel_count + 2) / 3;
+    let pixel_rows = pixel_count.div_ceil(3);
     y += pixel_rows as f64 * ROW_H + 14.0;
 
     // Hint
@@ -578,7 +576,7 @@ fn build_thumbnails_from_data(images: &[(Vec<u8>, &str)]) -> (String, f64) {
         ));
     }
 
-    let rows = ((images.len() + max_per_row - 1) / max_per_row) as f64;
+    let rows = images.len().div_ceil(max_per_row) as f64;
     let total_h = rows * (thumb_h + label_h + 8.0);
 
     (svg_lines.join(""), total_h)
@@ -598,6 +596,8 @@ fn grsai_api_key() -> String {
     env::var("GRSAI_API_KEY").unwrap_or_default()
 }
 
+type LabelResolvers = (fn(&str, &str) -> String, fn(&str) -> String);
+
 async fn submit_and_poll(
     prompt: String,
     model: String,
@@ -605,9 +605,9 @@ async fn submit_and_poll(
     quality: String,
     ref_urls: Vec<String>,
     user_id: i64,
-    resolve_quality_label: fn(&str, &str) -> String,
-    resolve_model_label: fn(&str) -> String,
+    resolve_labels: LabelResolvers,
 ) {
+    let (resolve_quality_label, resolve_model_label) = resolve_labels;
     let host = grsai_host();
     let api_key = grsai_api_key();
 
@@ -875,7 +875,7 @@ fn is_whitelisted(user_id: i64) -> bool {
         .split(',')
         .filter_map(|s| s.trim().parse::<i64>().ok())
         .collect();
-    let ok = allowed.iter().any(|id| *id == user_id);
+    let ok = allowed.contains(&user_id);
     if !ok {
         log::info!(
             "[grsai-gpt-image] Whitelist check: user_id={}, allowed={:?}, raw_env={:?}",
@@ -893,7 +893,7 @@ fn is_continuation_text(text: &str) -> bool {
 
     // Size index: 1-21
     if let Ok(n) = trimmed.parse::<usize>() {
-        if n >= 1 && n <= 21 {
+        if (1..=21).contains(&n) {
             return true;
         }
     }
@@ -1263,8 +1263,7 @@ impl Feature for GptImageFeature {
                         quality,
                         ref_urls,
                         user_id,
-                        resolve_quality_label,
-                        resolve_model_label,
+                        (resolve_quality_label, resolve_model_label),
                     ));
 
                     Some(msg_segment_from_string(

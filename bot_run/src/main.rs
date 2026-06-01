@@ -2,6 +2,7 @@ use bot_lib::{logger, NapcatWebSocket, Segment};
 use bot_run::feature::{Feature, FeatureConfig, MessageContext, FEATURE_MANAGER};
 use bot_run::image_matting::{ImageMattingResult, MsgQueue};
 use bot_run::loli::LoliTtsResult;
+use bot_run::tldr::TldrResult;
 use bot_run::tts::TtsResult;
 use bot_run::sdimage::SdImageResult;
 use bot_run::video_prompt::VideoPromptResult;
@@ -71,6 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (loli_tts_tx, mut loli_tts_rx) = mpsc::channel::<LoliTtsResult>(32);
     let (tts_tx, mut tts_rx) = mpsc::channel::<TtsResult>(32);
     let (gimg_tx, mut gimg_rx) = mpsc::channel::<GptImageResult>(32);
+    let (tldr_tx, mut tldr_rx) = mpsc::channel::<TldrResult>(32);
     let msg_queue: MsgQueue = Arc::new(Mutex::new(VecDeque::new()));
     let ws_sd = ws_arc.clone();
     let ws_cron = ws_arc.clone();
@@ -78,6 +80,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws_matting = ws_arc.clone();
     let ws_loli_tts = ws_arc.clone();
     let ws_tts = ws_arc.clone();
+    let ws_tldr = ws_arc.clone();
     let ws_gimg = ws_arc.clone();
 
     let features_enabled: Vec<String> = env::var("FEATURES_ENABLED")
@@ -122,6 +125,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             bot_run::loli::LoliFeature::feature_name(),
             move || {
                 Arc::new(bot_run::loli::LoliFeature::new(loli_tts_tx.clone()))
+                    as Arc<dyn Feature + Send + Sync>
+            },
+        );
+        manager.register(
+            bot_run::tldr::TldrFeature::feature_id(),
+            bot_run::tldr::TldrFeature::feature_name(),
+            move || {
+                Arc::new(bot_run::tldr::TldrFeature::new(tldr_tx.clone()))
                     as Arc<dyn Feature + Send + Sync>
             },
         );
@@ -315,6 +326,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         while let Some(result) = tts_rx.recv().await {
             let segments = vec![result.segment];
             let _ = send_reply(&ws_tts, &result.context, segments).await;
+        }
+    });
+
+    tokio::spawn(async move {
+        while let Some(result) = tldr_rx.recv().await {
+            let segments = vec![result.segment];
+            let _ = send_reply(&ws_tldr, &result.context, segments).await;
         }
     });
 

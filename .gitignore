@@ -25,3 +25,4 @@ target
 qq-bot-*.tar.gz
 
 bot_run/test_output/*
+.claude
