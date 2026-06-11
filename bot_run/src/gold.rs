@@ -1,12 +1,12 @@
+use crate::db;
 use crate::feature::{Feature, MessageContext};
 use crate::msg_segment_from_string;
-use crate::redis_client::redis;
 use async_trait::async_trait;
 use bot_lib::structs::{MessageSegment, Segment};
 use chrono::{TimeZone, Utc};
-use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sqlx::Row;
 use std::env;
 use tokio::time::{sleep, Duration};
 
@@ -14,7 +14,6 @@ use tokio::time::{sleep, Duration};
 
 const API_REQUEST_RETRIES: u32 = 5;
 const FETCH_INTERVAL_MS: i64 = 30 * 60 * 1000;
-const CACHE_EXPIRE: u64 = 40 * 60;
 const OUNCE_TO_GRAM: f64 = 31.1035;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -401,17 +400,18 @@ fn build_goldapi_result(
 
 async fn fetch_usd_cny_rate(client: &reqwest::Client, token: &str) -> Option<f64> {
     let cache_key = "RATE:USD:CNY";
-    let mut conn = match redis().await {
-        Ok(c) => c.clone(),
-        Err(e) => {
-            log::warn!("Redis unavailable: {}", e);
-            return None;
-        }
-    };
-
+    let pool = db::pg().await;
     let now_ms = Utc::now().timestamp_millis();
-    if let Ok(cached) = conn.get::<_, String>(cache_key).await {
-        if let Ok(rate_data) = serde_json::from_str::<CachedRateData>(&cached) {
+
+    if let Ok(Some(row)) = sqlx::query(
+        "SELECT value FROM cache_entries WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+    )
+    .bind(cache_key)
+    .fetch_optional(pool)
+    .await
+    {
+        let val: serde_json::Value = row.get("value");
+        if let Ok(rate_data) = serde_json::from_value::<CachedRateData>(val.clone()) {
             if let Some(rate) = rate_data.usd_cny {
                 if (now_ms - rate_data.time) < FETCH_INTERVAL_MS {
                     log::debug!("[Currency] Using cached USD/CNY rate: {}", rate);
@@ -419,7 +419,7 @@ async fn fetch_usd_cny_rate(client: &reqwest::Client, token: &str) -> Option<f64
                 }
                 log::debug!("[Currency] Cached rate is stale, re-fetching");
             }
-        } else if let Ok(rate) = cached.parse::<f64>() {
+        } else if let Some(rate) = val.as_f64() {
             log::debug!("[Currency] Using legacy cached USD/CNY rate: {}", rate);
             return Some(rate);
         }
@@ -454,9 +454,14 @@ async fn fetch_usd_cny_rate(client: &reqwest::Client, token: &str) -> Option<f64
                             usd_cny: Some(rate_val),
                         };
 
-                        // Store with no expiry (redis SET, not SETEX)
-                        if let Ok(json_str) = serde_json::to_string(&rate_data) {
-                            let _ = conn.set::<_, _, ()>(cache_key, json_str).await;
+                        if let Ok(json_val) = serde_json::to_value(&rate_data) {
+                            let _ = sqlx::query(
+                                "INSERT INTO cache_entries (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2",
+                            )
+                            .bind(cache_key)
+                            .bind(&json_val)
+                            .execute(pool)
+                            .await;
                         }
                         log::debug!("[Currency] Fetched USD/CNY rate: {}", rate_val);
                         return Some(rate_val);
@@ -521,30 +526,29 @@ fn get_cache_key(window: i64) -> String {
 
 async fn get_cached_prices(window: i64) -> Option<ICachedPriceData> {
     let key = get_cache_key(window);
-    let mut conn = match redis().await {
-        Ok(c) => c.clone(),
-        Err(e) => {
-            log::warn!("Redis unavailable: {}", e);
-            return None;
-        }
-    };
-    let cached: Result<String, _> = conn.get(&key).await;
-    if let Ok(json_str) = cached {
-        serde_json::from_str::<ICachedPriceData>(&json_str).ok()
-    } else {
-        None
-    }
+    let pool = db::pg().await;
+    let row = sqlx::query(
+        "SELECT value FROM cache_entries WHERE key = $1 AND (expires_at IS NULL OR expires_at > NOW())",
+    )
+    .bind(&key)
+    .fetch_optional(pool)
+    .await
+    .ok()??;
+    let val: serde_json::Value = row.get("value");
+    serde_json::from_value::<ICachedPriceData>(val).ok()
 }
 
 async fn store_cached_prices(window: i64, data: &ICachedPriceData) {
     let key = get_cache_key(window);
-    let Ok(conn) = redis().await else {
-        log::warn!("Redis unavailable");
-        return;
-    };
-    let mut conn = conn.clone();
-    if let Ok(json_str) = serde_json::to_string(data) {
-        let _ = conn.set_ex::<_, _, ()>(&key, json_str, CACHE_EXPIRE).await;
+    let pool = db::pg().await;
+    if let Ok(json_val) = serde_json::to_value(data) {
+        let _ = sqlx::query(
+            "INSERT INTO cache_entries (key, value, expires_at) VALUES ($1, $2, NOW() + INTERVAL '40 minutes') ON CONFLICT (key) DO UPDATE SET value = $2, expires_at = NOW() + INTERVAL '40 minutes'",
+        )
+        .bind(&key)
+        .bind(&json_val)
+        .execute(pool)
+        .await;
     }
 }
 

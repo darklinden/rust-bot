@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "bot_lib",
     "bot_run",
+    "kb_tool",
 ]
 
 [workspace.package]

@@ -19,10 +19,7 @@ const MSG_QUEUE_MAX_LEN: usize = 50;
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
 
-    // for item in dotenvy::dotenv_iter()? {
-    //     let (key, val) = item?;
-    //     println!("{}={}", key, val);
-    // }
+    bot_run::db::init().await.expect("Database init failed");
 
     logger::init();
     logger::set_level(log::LevelFilter::Debug);
@@ -189,6 +186,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             },
         );
 
+        manager.register(
+            bot_run::chat::ChatFeature::feature_id(),
+            bot_run::chat::ChatFeature::feature_name(),
+            || {
+                Arc::new(bot_run::chat::ChatFeature::new(
+                    env::var("OPENAI_BASE_URL").unwrap_or_default(),
+                    env::var("OPENAI_API_KEY").unwrap_or_default(),
+                    env::var("OPENAI_API_MODEL").unwrap_or_default(),
+                    env::var("EMBEDDING_URL").unwrap_or_else(|_| "http://localhost:8080".into()),
+                    env::var("EMBEDDING_MODEL").unwrap_or_else(|_| "Qwen3-Embedding-4B".into()),
+                ))
+            },
+        );
+        manager.register(
+            bot_run::chat::manage::PersonaManageFeature::feature_id(),
+            bot_run::chat::manage::PersonaManageFeature::feature_name(),
+            || {
+                Arc::new(bot_run::chat::manage::PersonaManageFeature)
+                    as Arc<dyn Feature + Send + Sync>
+            },
+        );
+
         for feat in &features_enabled {
             if let Err(e) = manager.load_feature(feat.trim()) {
                 log::warn!("Failed to load feature '{}': {}", feat, e);
@@ -247,7 +266,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     manager.loaded.clone()
                 };
 
+                // Phase 1: active features (commands) — break on first match
+                let mut handled = false;
                 for feature in &current_features {
+                    if feature.is_passive() {
+                        continue;
+                    }
                     if feature.check_command(&msg) {
                         let ctx = context.clone();
                         let msg_clone = msg.clone();
@@ -261,7 +285,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         });
 
+                        handled = true;
                         break;
+                    }
+                }
+
+                // Phase 2: passive features — all text messages, no break
+                if !handled {
+                    for feature in &current_features {
+                        if !feature.is_passive() {
+                            continue;
+                        }
+                        if feature.check_command(&msg) {
+                            let ctx = context.clone();
+                            let msg_clone = msg.clone();
+                            let ws_clone = ws_features.clone();
+                            let feat = Arc::clone(feature);
+
+                            tokio::spawn(async move {
+                                let result = feat.deal_with_message(&ctx, &msg_clone).await;
+                                if let Some(segment) = result {
+                                    let _ = send_reply(&ws_clone, &ctx, vec![segment]).await;
+                                }
+                            });
+                        }
                     }
                 }
             }

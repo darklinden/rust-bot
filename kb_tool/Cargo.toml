@@ -1,0 +1,20 @@
+[package]
+name = "kb_tool"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "kb-tool"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true, features = ["full"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres"] }
+reqwest = { version = "0.13", features = ["json", "native-tls"], default-features = false }
+indicatif = "0.17"
+anyhow = "1"
+futures-util = { workspace = true }
+walkdir = "2"

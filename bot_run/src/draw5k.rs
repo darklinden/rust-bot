@@ -396,13 +396,8 @@ impl Feature for Draw5kFeature {
     ) -> Option<MessageSegment> {
         let text = msg["data"]["text"].as_str().unwrap_or("").trim();
 
-        let args = if let Some(rest) = text.strip_prefix("-5k ") {
-            rest
-        } else if let Some(rest) = text.strip_prefix("5k ") {
-            rest
-        } else {
-            return None;
-        };
+        let args = text.strip_prefix("-5k ")
+            .or_else(|| text.strip_prefix("5k "))?;
 
         let (upper, lower) = parse_args(args);
         if upper.is_empty() {

@@ -1,5 +1,6 @@
 pub mod choice;
 pub mod cron;
+pub mod db;
 pub mod draw5k;
 pub mod dup_check;
 pub mod feature;
@@ -9,7 +10,7 @@ pub mod image_matting;
 pub mod jrrp;
 pub mod loli;
 pub mod media_file;
-pub mod redis_client;
+pub mod chat;
 pub mod sdimage;
 pub mod tldr;
 pub mod tts;

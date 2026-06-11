@@ -5,7 +5,7 @@ services:
     image: mlikiowa/napcat-docker:v4.17.5
     container_name: napcat
     restart: always
-    mac_address: 02:42:ac:11:00:02 # 添加MAC地址固化配置
+    mac_address: 02:42:ac:11:00:02
 
     environment:
       - NAPCAT_UID=${NAPCAT_UID}
@@ -20,34 +20,28 @@ services:
       - ./napcat/config:/app/napcat/config
       - ./ntqq:/app/.config/QQ
 
-  redis:
-    image: redis/redis-stack-server:7.4.0-v8-x86_64
-    container_name: redis
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: postgres
     restart: always
-    mac_address: 02:42:ac:11:00:04 # 添加MAC地址固化配置
-
+    environment:
+      - POSTGRES_USER=bot
+      - POSTGRES_PASSWORD=${PG_PASSWORD:-bot123}
+      - POSTGRES_DB=bot
     volumes:
-      - ./redis:/data
-
+      - ./postgres:/var/lib/postgresql/data
     ports:
-      - "6379:6379" # Redis server
-      - "8001:8001" # RedisInsight (optional)
-
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
+      - "5432:5432"
 
   bot:
     image: qq-bot:0.0.1
     container_name: bot
     restart: always
-    mac_address: 02:42:ac:11:00:03 # 添加MAC地址固化配置
+    mac_address: 02:42:ac:11:00:03
 
     environment:
       - NAPCAT_WS_URL=ws://napcat:3001
-      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgres://bot:${PG_PASSWORD:-bot123}@postgres:5432/bot
       - NAPCAT_ACCESS_TOKEN=${NAPCAT_ACCESS_TOKEN}
       - JISU_API_TOKEN=${JISU_API_TOKEN}
       - GOLD_API_TOKEN=${GOLD_API_TOKEN}
@@ -58,7 +52,8 @@ services:
       - OPENAI_API_MODEL=
 
       - COMFY_UI_URL=${COMFY_UI_URL}
+      - EMBEDDING_URL=http://host.docker.internal:8080
 
     depends_on:
       - napcat
-      - redis
+      - postgres

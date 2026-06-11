@@ -274,6 +274,7 @@ impl MessageContext {
 pub trait Feature: Send + Sync {
     fn feature_id(&self) -> &str;
     fn feature_name(&self) -> &str;
+    fn is_passive(&self) -> bool { false }
     fn check_command(&self, msg: &Value) -> bool;
     async fn deal_with_message(
         &self,
